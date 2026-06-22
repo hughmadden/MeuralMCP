@@ -1,8 +1,10 @@
 import unittest
+from unittest.mock import patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
-from meural_mcp.api import require_api_token
+from meural_mcp.api import create_app, require_api_token
 
 
 class ApiAuthTests(unittest.TestCase):
@@ -15,7 +17,21 @@ class ApiAuthTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 401)
 
+    def test_remote_mcp_requires_token(self):
+        with patch("meural_mcp.api.load_config", return_value={"api_token": "secret"}):
+            with TestClient(create_app()) as client:
+                response = client.post("/mcp")
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_remote_mcp_accepts_token_before_protocol_validation(self):
+        headers = {"Authorization": "Bearer secret"}
+        with patch("meural_mcp.api.load_config", return_value={"api_token": "secret"}):
+            with TestClient(create_app()) as client:
+                response = client.post("/mcp", headers=headers)
+
+        self.assertNotEqual(response.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -7,7 +7,8 @@ previews loaded.
 
 - Quiet daemon loop that retries often-failing frames without noisy logs.
 - REST API protected by a shared token.
-- MCP tools for coding agents to inspect devices and set the current image.
+- Hosted remote MCP endpoint for coding agents, protected by the same shared token.
+- Optional stdio MCP adapter for clients that cannot connect to remote MCP directly.
 - Per-device current image storage.
 - Orientation validation before writing a preview.
 - In-memory/status tracking for LAN reachability failures.
@@ -143,18 +144,31 @@ For LAN access, keep `meural-mcp-api.service` on `127.0.0.1:8733` and expose it
 through HTTPS with Caddy or nginx. The shared token is still required by
 MeuralMCP, but TLS should protect the token in transit.
 
-Run the MCP server for a coding agent:
+The API service also exposes a remote streamable-HTTP MCP endpoint at `/mcp/`.
+When the API is behind HTTPS, coding agents that support remote MCP should
+connect directly to that URL with the same bearer token used by the REST API.
+Clients do not need the MeuralMCP package installed just to use this hosted MCP
+endpoint.
+
+Example remote MCP URL:
+
+```text
+https://meural-mcp.example.test/mcp/
+```
+
+Run the stdio MCP adapter only for coding agents that do not support remote MCP:
 
 ```bash
 meural-mcp --storage-dir ~/.config/meural-mcp mcp --transport stdio
 ```
 
-If the MCP server runs on your workstation while the daemon/API run on another
-host, point it at the remote API instead. In this mode, `set_device_image` reads
-the image path from the workstation and uploads the bytes to MeuralMCP:
+If this compatibility adapter runs on your workstation while the daemon/API run
+on another host, point it at the remote API instead. In this mode,
+`set_device_image` reads the image path from the workstation and uploads the
+bytes to MeuralMCP:
 
 ```bash
-export MEURAL_MCP_API_URL="https://homepi:9443"
+export MEURAL_MCP_API_URL="https://meural-mcp.example.test"
 export MEURAL_MCP_API_TOKEN="..."
 export MEURAL_MCP_API_VERIFY_TLS=false  # only for self-signed lab certs
 meural-mcp mcp --transport stdio

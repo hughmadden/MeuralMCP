@@ -81,7 +81,7 @@ class McpToolTests(unittest.TestCase):
                 result = mcp_set_device_image(
                     "spare",
                     str(image),
-                    api_url="https://homepi:9443",
+                    api_url="https://meural-mcp.example.test",
                     api_token="token",
                     verify_tls=False,
                 )
@@ -90,7 +90,7 @@ class McpToolTests(unittest.TestCase):
             method, url = request.call_args.args
             kwargs = request.call_args.kwargs
             self.assertEqual(method, "PUT")
-            self.assertEqual(url, "https://homepi:9443/devices/spare/image")
+            self.assertEqual(url, "https://meural-mcp.example.test/devices/spare/image")
             self.assertEqual(kwargs["headers"]["Authorization"], "Bearer token")
             self.assertEqual(kwargs["headers"]["Content-Type"], "image/png")
             self.assertEqual(kwargs["data"], image.read_bytes())

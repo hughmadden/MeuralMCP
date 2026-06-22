@@ -102,10 +102,18 @@ def mcp_set_device_image(
         return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
 
 
-def build_mcp_server():
+def build_mcp_server(
+    *,
+    streamable_http_path: str = "/mcp",
+    stateless_http: bool = False,
+):
     from mcp.server.fastmcp import FastMCP
 
-    server = FastMCP("MeuralMCP")
+    server = FastMCP(
+        "MeuralMCP",
+        streamable_http_path=streamable_http_path,
+        stateless_http=stateless_http,
+    )
 
     @server.tool()
     def list_devices() -> dict[str, Any]:

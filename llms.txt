@@ -1,9 +1,9 @@
 # MeuralMCP
 
-> MeuralMCP is a Python daemon, REST API, and MCP server for locally managing
-> Netgear Meural Canvas preview images. It polls frames because previews can be
-> lost after sleep or boot, stores one assigned image per device, validates image
-> orientation, and exposes MCP tools for coding agents.
+> MeuralMCP is a Python daemon, REST API, and hosted MCP service for locally
+> managing Netgear Meural Canvas preview images. It polls frames because
+> previews can be lost after sleep or boot, stores one assigned image per
+> device, validates image orientation, and exposes MCP tools for coding agents.
 
 This repository is intended to be public and generic. Do not add real device
 names, IP addresses, cloud IDs, serial numbers, MAC addresses, API tokens,
@@ -20,7 +20,7 @@ passwords, cookies, private images, or generated runtime state.
 - [src/meural_mcp/cli.py](src/meural_mcp/cli.py): command-line entrypoint for init, daemon, REST API, and MCP server.
 - [src/meural_mcp/manager.py](src/meural_mcp/manager.py): core device config, image assignment, preview reload, reachability, blank gallery, and timeout logic.
 - [src/meural_mcp/mcp_server.py](src/meural_mcp/mcp_server.py): MCP tools for listing devices, reading status, reading assigned image paths, and setting current images.
-- [src/meural_mcp/api.py](src/meural_mcp/api.py): token-protected REST API.
+- [src/meural_mcp/api.py](src/meural_mcp/api.py): token-protected REST API and hosted remote MCP endpoint at `/mcp/`.
 - [src/meural_mcp/cloud.py](src/meural_mcp/cloud.py): Meural cloud authentication and setup calls.
 - [src/meural_mcp/local.py](src/meural_mcp/local.py): local frame `/remote` calls.
 
@@ -31,6 +31,16 @@ passwords, cookies, private images, or generated runtime state.
 - [examples/systemd/meural-mcp-user.service](examples/systemd/meural-mcp-user.service): user-level daemon sample.
 - [examples/reverse-proxy/Caddyfile](examples/reverse-proxy/Caddyfile): Caddy HTTPS reverse proxy sample.
 - [examples/reverse-proxy/nginx.conf](examples/reverse-proxy/nginx.conf): nginx HTTPS reverse proxy sample.
+
+## MCP Client Model
+
+Preferred: run the daemon/API on the service host and expose remote MCP at
+`/mcp/` over HTTPS. Clients that support remote MCP should connect to that URL
+with the shared bearer token and should not need this package installed locally.
+
+Fallback: run `meural-mcp mcp --transport stdio` locally only for clients that
+cannot speak remote MCP. The stdio adapter may point at a remote REST API with
+`MEURAL_MCP_API_URL`.
 
 ## Tests
 

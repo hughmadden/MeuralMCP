@@ -1,5 +1,5 @@
 [Unit]
-Description=MeuralMCP localhost REST API
+Description=MeuralMCP localhost REST API and remote MCP endpoint
 Wants=network-online.target
 After=network-online.target meural-mcp.service
 

@@ -142,6 +142,17 @@ def orientation_for_dimensions(width: int, height: int) -> str:
     return "landscape" if width > height else "portrait"
 
 
+def normalise_orientation(value: Optional[str]) -> str:
+    orientation = (value or "landscape").strip().lower()
+    aliases = {
+        "horizontal": "landscape",
+        "landscape": "landscape",
+        "vertical": "portrait",
+        "portrait": "portrait",
+    }
+    return aliases.get(orientation, "landscape")
+
+
 class ManagerService:
     def __init__(
         self,
@@ -238,7 +249,7 @@ class ManagerService:
             self._record_failure(device["name"], "image_invalid", str(exc))
             return {"status": "failed", "reason": "image_invalid", "error": str(exc)}
         actual_orientation = orientation_for_dimensions(width, height)
-        expected_orientation = device.get("orientation", "landscape")
+        expected_orientation = normalise_orientation(device.get("orientation"))
         if actual_orientation != expected_orientation:
             self._record_failure(device["name"], "orientation_mismatch")
             return {
@@ -394,7 +405,12 @@ def refresh_device_ids_from_cloud(cloud_client: MeuralCloudClient, config: dict[
     return {"refreshed": refreshed}
 
 
-def initialise_cloud_timeouts(cloud_client: MeuralCloudClient, config: dict[str, Any], include_disabled: bool = True) -> dict:
+def initialise_cloud_timeouts(
+    cloud_client: MeuralCloudClient,
+    config: dict[str, Any],
+    include_disabled: bool = True,
+    progress: Optional[Callable[[str], None]] = None,
+) -> dict:
     timeouts = config.get("timeouts", DEFAULT_TIMEOUTS)
     updated, failed = [], []
     for device in config.get("devices", []):
@@ -404,6 +420,8 @@ def initialise_cloud_timeouts(cloud_client: MeuralCloudClient, config: dict[str,
         if not cloud_id:
             continue
         try:
+            if progress:
+                progress(f"setting timeouts and syncing {device['name']}")
             cloud_client.update_device(int(cloud_id), dict(timeouts))
             cloud_client.sync_device(int(cloud_id))
             updated.append(device["name"])
@@ -412,24 +430,32 @@ def initialise_cloud_timeouts(cloud_client: MeuralCloudClient, config: dict[str,
     return {"updated": updated, "failed": failed}
 
 
-def ensure_blank_gallery_assigned(cloud_client: MeuralCloudClient, config: dict[str, Any], root: Path) -> dict:
+def ensure_blank_gallery_assigned(
+    cloud_client: MeuralCloudClient,
+    config: dict[str, Any],
+    root: Path,
+    progress: Optional[Callable[[str], None]] = None,
+) -> dict:
     blank_galleries = _normalise_blank_gallery_config(config)
     devices_by_orientation: dict[str, list[dict]] = {}
     for device in config.get("devices", []):
         cloud_id = device.get("cloud_id")
         if not cloud_id:
             continue
-        orientation = device.get("orientation") or "landscape"
-        if orientation not in {"landscape", "portrait"}:
-            orientation = "landscape"
+        orientation = normalise_orientation(device.get("orientation"))
+        device["orientation"] = orientation
         devices_by_orientation.setdefault(orientation, []).append(device)
 
     results = {}
     for orientation, devices in devices_by_orientation.items():
         gallery_config = blank_galleries[orientation]
+        if progress:
+            progress(f"preparing {orientation} blank gallery for {len(devices)} device(s)")
         gallery = find_gallery_by_name(cloud_client, gallery_config["name"])
         created = False
         if not gallery:
+            if progress:
+                progress(f"creating {orientation} blank gallery")
             gallery = cloud_client.create_gallery(
                 gallery_config["name"],
                 gallery_config.get("description", ""),
@@ -441,10 +467,14 @@ def ensure_blank_gallery_assigned(cloud_client: MeuralCloudClient, config: dict[
 
         blank_image = root / f"blank-black-{orientation}-{gallery_config['width']}x{gallery_config['height']}.png"
         if not blank_image.exists():
+            if progress:
+                progress(f"creating local {orientation} blank image")
             write_blank_png(blank_image, gallery_config["width"], gallery_config["height"])
 
         uploaded_item_id = None
         if not cloud_client.list_gallery_items(gallery_id).get("data", []):
+            if progress:
+                progress(f"uploading {orientation} blank image")
             uploaded = cloud_client.upload_item_to_gallery(gallery_id, blank_image).get("data", {})
             uploaded_item_id = uploaded.get("id")
 
@@ -459,6 +489,8 @@ def ensure_blank_gallery_assigned(cloud_client: MeuralCloudClient, config: dict[
                 if has_gallery:
                     already_assigned.append(device["name"])
                     continue
+                if progress:
+                    progress(f"assigning {device['name']} to {orientation} blank gallery")
                 cloud_client.set_device_gallery(int(cloud_id), gallery_id)
                 assigned.append(device["name"])
             except Exception as exc:

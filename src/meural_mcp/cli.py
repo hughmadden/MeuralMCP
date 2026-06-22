@@ -14,6 +14,7 @@ from .manager import (
     ensure_blank_gallery_assigned,
     initialise_cloud_timeouts,
     load_config,
+    normalise_orientation,
     save_config,
     storage_dir,
 )
@@ -62,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init-cloud":
         os.environ["MEURAL_MCP_STORAGE_DIR"] = str(root)
         cloud = MeuralCloudClient(args.username, args.password)
-        result = run_init_cloud(root, cloud, api_token=args.api_token)
+        result = run_init_cloud(root, cloud, api_token=args.api_token, progress=print_progress)
         if result["backup"]:
             print(f"warning: existing config backed up to {result['backup']} before writing new init values", file=sys.stderr)
         print(f"wrote {result['config_path']}; edit it if you need to change device names, IDs, IPs, or enabled flags", file=sys.stderr)
@@ -112,16 +113,36 @@ def initialise_config_file(root: Path, api_token: str) -> dict:
     return {"config_path": str(config_path), "backup": backup}
 
 
-def run_init_cloud(root: Path, cloud: MeuralCloudClient, api_token: str | None = None) -> dict:
+def run_init_cloud(
+    root: Path,
+    cloud: MeuralCloudClient,
+    api_token: str | None = None,
+    progress=None,
+) -> dict:
     api_token = api_token or secrets.token_urlsafe(32)
+    if progress:
+        progress("writing initial config and backup if needed")
     init_result = initialise_config_file(root, api_token)
+    if progress:
+        progress("loading config")
     config = load_config(root)
+    if progress:
+        progress("discovering devices from Meural cloud")
     discover = discover_devices_from_cloud(cloud)
+    if progress:
+        progress(f"discovered {discover['count']} device(s)")
     config["devices"] = discover["devices"]
     refresh = {"refreshed": [device["name"] for device in config["devices"] if device.get("cloud_id")]}
-    blank_galleries = ensure_blank_gallery_assigned(cloud, config, root)
     save_config(config, root)
-    timeouts = initialise_cloud_timeouts(cloud, config, include_disabled=True)
+    if progress:
+        progress("preparing and assigning blank galleries")
+    blank_galleries = ensure_blank_gallery_assigned(cloud, config, root, progress=progress)
+    save_config(config, root)
+    if progress:
+        progress("setting cloud timeout values and syncing devices")
+    timeouts = initialise_cloud_timeouts(cloud, config, include_disabled=True, progress=progress)
+    if progress:
+        progress("cloud init complete")
     return {
         "storage_dir": str(root),
         "config_path": init_result["config_path"],
@@ -147,7 +168,7 @@ def discover_devices_from_cloud(cloud: MeuralCloudClient) -> dict:
                 "display_name": display_name,
                 "cloud_id": device.get("id"),
                 "local_ip": device.get("localIp"),
-                "orientation": device.get("orientation") or "landscape",
+                "orientation": normalise_orientation(device.get("orientation")),
                 "enabled": True,
             }
         )
@@ -215,6 +236,10 @@ def print_result(result: dict) -> None:
     import json
 
     print(json.dumps(result, indent=2))
+
+
+def print_progress(message: str) -> None:
+    print(f"[meural-mcp init] {message}", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

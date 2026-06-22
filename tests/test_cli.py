@@ -83,6 +83,46 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(config["devices"]), 3)
         self.assertEqual([device["name"] for device in config["devices"]], ["canvas-one", "canvas-two", "canvas-three"])
 
+    def test_run_init_cloud_normalises_cloud_orientation_values(self):
+        cloud = Mock()
+        cloud.list_devices.return_value = {
+            "data": [
+                {"id": 1001, "alias": "Wide Canvas", "localIp": "192.0.2.10", "orientation": "horizontal"},
+                {"id": 1002, "alias": "Tall Canvas", "localIp": "192.0.2.11", "orientation": "vertical"},
+            ]
+        }
+        cloud.list_galleries.return_value = {"data": []}
+        cloud.create_gallery.side_effect = [
+            {"data": {"id": 2001, "name": "MeuralMCP Blank Hold Landscape"}},
+            {"data": {"id": 2002, "name": "MeuralMCP Blank Hold Portrait"}},
+        ]
+        cloud.list_gallery_items.return_value = {"data": []}
+        cloud.upload_item_to_gallery.side_effect = [{"data": {"id": 3001}}, {"data": {"id": 3002}}]
+        cloud.list_device_galleries.return_value = {"data": []}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_init_cloud(Path(tmp), cloud, api_token="token")
+            config = json.loads((Path(tmp) / "config.json").read_text())
+
+        self.assertEqual([device["orientation"] for device in config["devices"]], ["landscape", "portrait"])
+        self.assertEqual(result["cloud"]["blank_galleries"]["galleries"]["landscape"]["assigned"], ["wide-canvas"])
+        self.assertEqual(result["cloud"]["blank_galleries"]["galleries"]["portrait"]["assigned"], ["tall-canvas"])
+        cloud.set_device_gallery.assert_any_call(1001, 2001)
+        cloud.set_device_gallery.assert_any_call(1002, 2002)
+
+    def test_run_init_cloud_reports_progress(self):
+        cloud = Mock()
+        cloud.list_devices.return_value = {"data": []}
+        progress = Mock()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_init_cloud(Path(tmp), cloud, api_token="token", progress=progress)
+
+        messages = [call.args[0] for call in progress.call_args_list]
+        self.assertIn("discovering devices from Meural cloud", messages)
+        self.assertIn("discovered 0 device(s)", messages)
+        self.assertIn("cloud init complete", messages)
+
     def test_systemd_unit_uses_meural_mcp_daemon_command(self):
         with tempfile.TemporaryDirectory() as tmp, patch("meural_mcp.cli.Path.home", return_value=Path(tmp)):
             unit = install_systemd_user_service(Path(tmp) / "state", executable="/usr/bin/meural-mcp --storage-dir /tmp/state daemon", run_systemctl=False)

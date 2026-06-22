@@ -9,6 +9,7 @@ from meural_mcp.manager import (
     ensure_blank_gallery_assigned,
     initialise_cloud_timeouts,
     load_config,
+    normalise_orientation,
 )
 
 
@@ -69,6 +70,12 @@ class AuthTests(unittest.TestCase):
 
 
 class ImageAssignmentTests(unittest.TestCase):
+    def test_normalise_orientation_accepts_meural_cloud_values(self):
+        self.assertEqual(normalise_orientation("horizontal"), "landscape")
+        self.assertEqual(normalise_orientation("vertical"), "portrait")
+        self.assertEqual(normalise_orientation("landscape"), "landscape")
+        self.assertEqual(normalise_orientation("portrait"), "portrait")
+
     def test_assign_image_rejects_wrong_orientation_before_preview(self):
         with tempfile.TemporaryDirectory() as tmp:
             image = Path(tmp) / "portrait.png"
@@ -204,6 +211,31 @@ class InitTests(unittest.TestCase):
         self.assertEqual(result["galleries"]["portrait"]["assigned"], ["canvas-2"])
         cloud.set_device_gallery.assert_any_call(1001, 2001)
         cloud.set_device_gallery.assert_any_call(1002, 2002)
+
+    def test_blank_gallery_init_normalises_horizontal_vertical_orientations(self):
+        cloud = Mock()
+        cloud.list_galleries.return_value = {"data": []}
+        cloud.create_gallery.side_effect = [
+            {"data": {"id": 2001, "name": "MeuralMCP Blank Hold Landscape"}},
+            {"data": {"id": 2002, "name": "MeuralMCP Blank Hold Portrait"}},
+        ]
+        cloud.list_gallery_items.return_value = {"data": []}
+        cloud.upload_item_to_gallery.side_effect = [{"data": {"id": 3001}}, {"data": {"id": 3002}}]
+        cloud.list_device_galleries.return_value = {"data": []}
+        config = {
+            "devices": [
+                {"name": "wide", "cloud_id": 1001, "orientation": "horizontal", "enabled": True},
+                {"name": "tall", "cloud_id": 1002, "orientation": "vertical", "enabled": True},
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = ensure_blank_gallery_assigned(cloud, config, Path(tmp))
+
+        self.assertEqual(config["devices"][0]["orientation"], "landscape")
+        self.assertEqual(config["devices"][1]["orientation"], "portrait")
+        self.assertEqual(result["galleries"]["landscape"]["assigned"], ["wide"])
+        self.assertEqual(result["galleries"]["portrait"]["assigned"], ["tall"])
 
 
 if __name__ == "__main__":

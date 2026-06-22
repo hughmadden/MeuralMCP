@@ -117,14 +117,17 @@ def build_mcp_server(
 
     @server.tool()
     def list_devices() -> dict[str, Any]:
+        """List all configured devices with names, display names, IPs, orientation, enabled state, reachability, and assigned image paths."""
         return mcp_list_devices()
 
     @server.tool()
     def get_device_status(name: str) -> dict[str, Any]:
+        """Get one device's inventory and status, including display name, cloud ID, LAN IP, orientation, reachability, state, and assigned image."""
         return mcp_get_device_status(name)
 
     @server.tool()
     def get_device_image(name: str) -> dict[str, Any]:
+        """Get the current assigned image reference for a device."""
         return mcp_get_device_image(name)
 
     @server.tool()

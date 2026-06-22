@@ -181,6 +181,10 @@ MCP tools include:
 - `get_device_image`
 - `set_device_image`
 
+`list_devices` and `get_device_status` return the configured device name,
+display name, cloud ID, LAN IP, orientation, enabled flag, reachability, current
+assigned image, and the last recorded state for each device.
+
 `set_device_image` stores the image only after validating orientation and
 successfully loading the preview to the device. It returns a failed result if the
 image cannot be parsed/thumbnailed, the orientation is wrong, the device is

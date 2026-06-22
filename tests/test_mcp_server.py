@@ -25,21 +25,53 @@ def write_png(path: Path, width: int, height: int) -> None:
 class McpToolTests(unittest.TestCase):
     def test_list_devices_returns_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
-            config = {"devices": [{"name": "canvas-1", "orientation": "landscape", "enabled": True}]}
+            config = {
+                "devices": [
+                    {
+                        "name": "canvas-1",
+                        "display_name": "Living Room",
+                        "cloud_id": 1001,
+                        "local_ip": "192.0.2.10",
+                        "orientation": "landscape",
+                        "enabled": True,
+                    }
+                ]
+            }
 
             result = mcp_list_devices(storage_dir=tmp, config=config)
 
             self.assertEqual(result["device_count"], 1)
-            self.assertEqual(result["devices"][0]["name"], "canvas-1")
+            device = result["devices"][0]
+            self.assertEqual(device["name"], "canvas-1")
+            self.assertEqual(device["display_name"], "Living Room")
+            self.assertEqual(device["cloud_id"], 1001)
+            self.assertEqual(device["local_ip"], "192.0.2.10")
+            self.assertEqual(device["orientation"], "landscape")
+            self.assertTrue(device["enabled"])
 
     def test_get_device_status_returns_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
-            config = {"devices": [{"name": "canvas-1", "orientation": "landscape", "enabled": True}]}
+            config = {
+                "devices": [
+                    {
+                        "name": "canvas-1",
+                        "display_name": "Living Room",
+                        "cloud_id": 1001,
+                        "local_ip": "192.0.2.10",
+                        "orientation": "landscape",
+                        "enabled": True,
+                    }
+                ]
+            }
 
             result = mcp_get_device_status("canvas-1", storage_dir=tmp, config=config)
 
             self.assertEqual(result["name"], "canvas-1")
+            self.assertEqual(result["display_name"], "Living Room")
+            self.assertEqual(result["cloud_id"], 1001)
+            self.assertEqual(result["local_ip"], "192.0.2.10")
             self.assertEqual(result["orientation"], "landscape")
+            self.assertTrue(result["enabled"])
 
     def test_set_device_image_returns_error_when_thumbnail_or_parse_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

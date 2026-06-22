@@ -30,12 +30,32 @@ This project builds on public Meural local-control work from the community:
 
 ## Quick Start
 
+Most users should run cloud init first. It is the step that discovers your
+frames, writes the starter config, changes Meural cloud timeout settings, and
+assigns the neutral blank gallery used by the local preview manager.
+
+Cloud init changes these Meural cloud values:
+
+- Sets `imageDuration=86400`, `previewDuration=86400`, and `overlayDuration=120`
+  on discovered devices.
+- Finds or creates one landscape and/or one portrait blank gallery.
+- Uploads one blank image to each blank gallery if the gallery is empty.
+- Assigns each device to the matching blank gallery for its orientation.
+- Syncs the devices after changing these settings.
+
+Cloud init does not delete your existing Meural images or galleries, but it can
+change which gallery is assigned to each discovered device. Review the generated
+`config.json` after init and edit device names, IPs, orientations, or enabled
+flags before starting the daemon.
+
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .
 
-meural-mcp --storage-dir ~/.config/meural-mcp init-local --api-token "change-me"
+meural-mcp --storage-dir ~/.config/meural-mcp init-cloud \
+  --username "$MEURAL_USERNAME" \
+  --password "$MEURAL_PASSWORD"
 ```
 
 Package dependencies are declared in `pyproject.toml`; `pip install -e .` installs
@@ -45,9 +65,15 @@ the CLI plus bounded runtime dependencies for FastAPI, Uvicorn, Requests, and MC
 ingestion. `AGENTS.md` contains contributor guardrails for keeping this repo
 public-safe.
 
-Edit `~/.config/meural-mcp/config.json` to set your device names, cloud IDs,
-LAN IPs, orientations, and enabled flags. `init-local` starts with an empty
-device list; `init-cloud` can discover your device list automatically.
+If you do not want cloud init, `init-local` can create an empty generic config:
+
+```bash
+meural-mcp --storage-dir ~/.config/meural-mcp init-local --api-token "change-me"
+```
+
+With `init-local`, you must manually fill in device names, cloud IDs, LAN IPs,
+orientations, and enabled flags in `~/.config/meural-mcp/config.json`. It also
+does not set timeout values or blank galleries in Meural cloud.
 
 Run the API:
 
@@ -140,7 +166,7 @@ curl -X PUT http://127.0.0.1:8733/devices/canvas-1/image \
   --data-binary @image.jpg
 ```
 
-## Optional Cloud Init
+## Cloud Init Details
 
 Cloud init requires a Meural username/password.
 
@@ -161,13 +187,13 @@ enable, and start `meural-mcp.service`. Interactive runs prompt for this unless
 3. Generates a shared API token, writes it to `config.json`, and prints it so you can save it for REST/MCP clients.
 4. If `config.json` already exists, writes a timestamped backup first.
 5. Finds or creates landscape and/or portrait blank galleries, depending on the discovered devices.
-6. Ensures each blank gallery has a single correctly oriented blank image.
+6. Ensures each blank gallery has a single correctly oriented blank image if the gallery is empty.
 7. Assigns each configured device to the matching blank gallery for its orientation.
 8. Sets `imageDuration=86400`, `previewDuration=86400`, `overlayDuration=120`.
 9. Syncs configured devices.
 
-After init, edit `config.json` if you need to adjust device names, cloud IDs,
-LAN IPs, orientations, or enabled flags.
+After init, review and edit `config.json` if you need to adjust device names,
+cloud IDs, LAN IPs, orientations, or enabled flags before running the daemon.
 
 ## FAQ
 

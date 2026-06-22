@@ -1,0 +1,14 @@
+[Unit]
+Description=MeuralMCP localhost REST API
+Wants=network-online.target
+After=network-online.target meural-mcp.service
+
+[Service]
+Type=simple
+Environment=MEURAL_MCP_STORAGE_DIR=%h/.config/meural-mcp
+ExecStart=%h/.local/bin/meural-mcp --storage-dir %h/.config/meural-mcp serve --host 127.0.0.1 --port 8733
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

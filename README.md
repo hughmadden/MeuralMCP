@@ -105,12 +105,15 @@ Sample service and reverse-proxy files are provided in `examples/`:
 - `examples/systemd/meural-mcp-daemon.service`
 - `examples/systemd/meural-mcp-api.service`
 - `examples/systemd/meural-mcp-user.service`
+- `examples/systemd/meural-mcp-api-user.service`
 - `examples/reverse-proxy/Caddyfile`
 - `examples/reverse-proxy/nginx.conf`
 
-The daemon and API are separate processes. The daemon keeps previews loaded; the
-API serves local status and image writes. In the system service examples, both
-use `/var/lib/meural-mcp` for config/state and expect the project installed at
+`init-cloud` is a one-shot CLI setup command. Run it manually so you can see and
+approve the cloud changes. The daemon and API are separate long-running
+processes: the daemon keeps previews loaded, and the API serves local status and
+image writes. In the system service examples, both long-running services use
+`/var/lib/meural-mcp` for config/state and expect the project installed at
 `/opt/meural-mcp/.venv/bin/meural-mcp`.
 
 For a system install:
@@ -128,12 +131,13 @@ For a user install:
 ```bash
 mkdir -p ~/.config/systemd/user
 cp examples/systemd/meural-mcp-user.service ~/.config/systemd/user/meural-mcp.service
+cp examples/systemd/meural-mcp-api-user.service ~/.config/systemd/user/meural-mcp-api.service
 systemctl --user daemon-reload
-systemctl --user enable --now meural-mcp.service
+systemctl --user enable --now meural-mcp.service meural-mcp-api.service
 ```
 
-The user service only starts the polling daemon. Run the API separately, or add a
-second user unit if you want the REST API under systemd too.
+The user service samples expect `meural-mcp` at `~/.local/bin/meural-mcp`.
+Adjust `ExecStart` if you installed into a project virtual environment instead.
 
 For LAN access, keep `meural-mcp-api.service` on `127.0.0.1:8733` and expose it
 through HTTPS with Caddy or nginx. The shared token is still required by

@@ -106,13 +106,16 @@ def build_mcp_server(
     *,
     streamable_http_path: str = "/mcp",
     stateless_http: bool = False,
+    allowed_hosts: Optional[list[str]] = None,
 ):
     from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
 
     server = FastMCP(
         "MeuralMCP",
         streamable_http_path=streamable_http_path,
         stateless_http=stateless_http,
+        transport_security=TransportSecuritySettings(allowed_hosts=allowed_hosts or []),
     )
 
     @server.tool()

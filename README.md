@@ -150,6 +150,11 @@ connect directly to that URL with the same bearer token used by the REST API.
 Clients do not need the MeuralMCP package installed just to use this hosted MCP
 endpoint.
 
+Set `MEURAL_MCP_ALLOWED_HOSTS` on the API service to the HTTPS hostnames clients
+will use for remote MCP, such as `meural-mcp.example.test` or
+`meural-mcp.example.test:443`. This keeps the MCP transport's DNS-rebinding
+protection enabled while allowing your reverse-proxy hostname.
+
 Example remote MCP URL:
 
 ```text

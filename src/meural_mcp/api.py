@@ -73,8 +73,19 @@ def service() -> ManagerService:
     return ManagerService()
 
 
+def mcp_allowed_hosts() -> list[str]:
+    defaults = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*", "testserver", "testserver:*"]
+    configured = os.getenv("MEURAL_MCP_ALLOWED_HOSTS", "")
+    extras = [host.strip() for host in configured.split(",") if host.strip()]
+    return defaults + extras
+
+
 def create_app() -> FastAPI:
-    remote_mcp_server = build_mcp_server(streamable_http_path="/", stateless_http=True)
+    remote_mcp_server = build_mcp_server(
+        streamable_http_path="/",
+        stateless_http=True,
+        allowed_hosts=mcp_allowed_hosts(),
+    )
 
     @asynccontextmanager
     async def lifespan(api_app: FastAPI):

@@ -1,4 +1,6 @@
+import base64
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -102,6 +104,41 @@ def mcp_set_device_image(
         return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
 
 
+def mcp_set_device_image_data(
+    name: str,
+    image_base64: str,
+    filename: str = "image.png",
+    storage_dir: str | Path | None = None,
+    config: Optional[dict[str, Any]] = None,
+    preview_writer: Optional[Callable[[dict, Path], dict]] = None,
+    api_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    verify_tls: Optional[bool] = None,
+) -> dict[str, Any]:
+    try:
+        image_bytes = base64.b64decode(image_base64, validate=True)
+    except Exception as exc:
+        return {"status": "failed", "reason": "image_base64_invalid", "error": str(exc)}
+
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png"}:
+        suffix = ".png"
+
+    remote = _remote_client(api_url, api_token, verify_tls)
+    if remote:
+        return remote.set_device_image_bytes(name, image_bytes, suffix=suffix)
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(image_bytes)
+        tmp_path = Path(tmp.name)
+    try:
+        return _service(storage_dir=storage_dir, config=config, preview_writer=preview_writer).assign_image(name, tmp_path)
+    except KeyError as exc:
+        return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def build_mcp_server(
     *,
     streamable_http_path: str = "/mcp",
@@ -135,8 +172,13 @@ def build_mcp_server(
 
     @server.tool()
     def set_device_image(name: str, image_path: str) -> dict[str, Any]:
-        """Store an image for a device and load it as the current preview."""
+        """Store an image from a server-local path and load it as the current preview."""
         return mcp_set_device_image(name, image_path)
+
+    @server.tool()
+    def set_device_image_data(name: str, image_base64: str, filename: str = "image.png") -> dict[str, Any]:
+        """Store a base64-encoded image uploaded by the MCP client and load it as the current preview."""
+        return mcp_set_device_image_data(name, image_base64, filename)
 
     return server
 

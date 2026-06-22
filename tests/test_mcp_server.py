@@ -1,9 +1,10 @@
 import tempfile
 import unittest
+import base64
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from meural_mcp.mcp_server import mcp_get_device_status, mcp_list_devices, mcp_set_device_image
+from meural_mcp.mcp_server import mcp_get_device_status, mcp_list_devices, mcp_set_device_image, mcp_set_device_image_data
 
 
 def write_png(path: Path, width: int, height: int) -> None:
@@ -83,6 +84,25 @@ class McpToolTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["reason"], "image_invalid")
+
+    def test_set_device_image_data_accepts_base64_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "landscape.png"
+            write_png(image, 1200, 800)
+            config = {"devices": [{"name": "canvas-1", "orientation": "landscape", "enabled": True}]}
+
+            result = mcp_set_device_image_data(
+                "canvas-1",
+                base64.b64encode(image.read_bytes()).decode("ascii"),
+                filename="client-image.png",
+                storage_dir=tmp,
+                config=config,
+                preview_writer=Mock(return_value={"status": "pass"}),
+            )
+
+            self.assertEqual(result["status"], "loaded")
+            self.assertEqual(result["device"], "canvas-1")
+            self.assertTrue((Path(tmp) / "images" / "canvas-1.png").exists())
 
     def test_set_device_image_returns_error_when_device_load_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

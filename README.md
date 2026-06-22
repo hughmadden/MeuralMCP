@@ -185,14 +185,20 @@ MCP tools include:
 - `get_device_status`
 - `get_device_image`
 - `set_device_image`
+- `set_device_image_data`
 
 `list_devices` and `get_device_status` return the configured device name,
 display name, cloud ID, LAN IP, orientation, enabled flag, reachability, current
 assigned image, and the last recorded state for each device.
 
-`set_device_image` stores the image only after validating orientation and
-successfully loading the preview to the device. It returns a failed result if the
-image cannot be parsed/thumbnailed, the orientation is wrong, the device is
+For hosted remote MCP, prefer `set_device_image_data`, which accepts base64 image
+bytes plus a filename. `set_device_image` accepts a path that is local to the
+machine running the MCP server, so it is mainly useful for stdio adapters or
+server-local files.
+
+Both image-writing tools store the image only after validating orientation and
+successfully loading the preview to the device. They return a failed result if
+the image cannot be parsed/thumbnailed, the orientation is wrong, the device is
 unknown, the file is missing, or the preview write fails.
 
 Upload an image:

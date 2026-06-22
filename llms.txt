@@ -38,6 +38,10 @@ Preferred: run the daemon/API on the service host and expose remote MCP at
 `/mcp/` over HTTPS. Clients that support remote MCP should connect to that URL
 with the shared bearer token and should not need this package installed locally.
 
+For hosted remote MCP, use `set_device_image_data` to upload image bytes as
+base64. `set_device_image` takes a path on the machine running the MCP server,
+so it is mainly for stdio adapters or server-local files.
+
 Fallback: run `meural-mcp mcp --transport stdio` locally only for clients that
 cannot speak remote MCP. The stdio adapter may point at a remote REST API with
 `MEURAL_MCP_API_URL`.

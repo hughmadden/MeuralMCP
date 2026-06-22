@@ -47,10 +47,20 @@ class RemoteApiClient:
 
     def set_device_image(self, name: str, image_path: Path) -> dict[str, Any]:
         content_type = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
+        return self.set_device_image_bytes(name, image_path.read_bytes(), suffix=image_path.suffix, content_type=content_type)
+
+    def set_device_image_bytes(
+        self,
+        name: str,
+        image_bytes: bytes,
+        suffix: str = ".png",
+        content_type: str | None = None,
+    ) -> dict[str, Any]:
+        content_type = content_type or ("image/png" if suffix.lower() == ".png" else "image/jpeg")
         return self.request(
             "PUT",
             f"/devices/{name}/image",
-            data=image_path.read_bytes(),
+            data=image_bytes,
             headers={"Content-Type": content_type},
             timeout=90,
         )

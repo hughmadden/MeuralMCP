@@ -122,7 +122,35 @@ class StatusTests(unittest.TestCase):
 
             self.assertEqual(result["device_count"], 1)
             self.assertEqual(result["reachable_count"], 0)
+            self.assertEqual(result["unreachable_count"], 1)
+            self.assertEqual(result["unknown_reachability_count"], 0)
             self.assertFalse(result["devices"][0]["reachable"])
+
+    def test_summary_status_counts_unknown_reachability(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ManagerService(root=Path(tmp), config=SINGLE_DEVICE_CONFIG)
+
+            result = service.summary_status()
+
+            self.assertEqual(result["device_count"], 1)
+            self.assertEqual(result["reachable_count"], 0)
+            self.assertEqual(result["unreachable_count"], 0)
+            self.assertEqual(result["unknown_reachability_count"], 1)
+            self.assertIsNone(result["devices"][0]["reachable"])
+
+    def test_poll_once_records_reachable_device_even_without_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = ManagerService(
+                root=Path(tmp),
+                config=SINGLE_DEVICE_CONFIG,
+                preview_writer=Mock(),
+                reachability_checker=Mock(return_value=True),
+            )
+
+            result = service.poll_once()
+
+            self.assertEqual(result["canvas-1"], {"status": "skipped", "reason": "no_image"})
+            self.assertTrue(service.state()["devices"]["canvas-1"]["reachable"])
 
     def test_poll_once_records_unreachable_device_without_previewing(self):
         with tempfile.TemporaryDirectory() as tmp:

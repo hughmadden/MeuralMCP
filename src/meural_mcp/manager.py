@@ -233,11 +233,15 @@ class ManagerService:
     def summary_status(self) -> dict[str, Any]:
         devices = [self.device_status(device["name"]) for device in self.devices()]
         reachable = [device for device in devices if device.get("reachable") is True]
+        unreachable = [device for device in devices if device.get("reachable") is False]
+        unknown = [device for device in devices if device.get("reachable") is None]
         enabled = [device for device in devices if device.get("enabled")]
         return {
             "device_count": len(devices),
             "enabled_count": len(enabled),
             "reachable_count": len(reachable),
+            "unreachable_count": len(unreachable),
+            "unknown_reachability_count": len(unknown),
             "devices": devices,
         }
 
@@ -299,12 +303,12 @@ class ManagerService:
             if not device.get("enabled", True):
                 results[name] = {"status": "skipped", "reason": "disabled"}
                 continue
+            if not self._device_reachable(device):
+                results[name] = {"status": "skipped", "reason": "unreachable"}
+                continue
             image = self.image_path(name)
             if not image:
                 results[name] = {"status": "skipped", "reason": "no_image"}
-                continue
-            if not self._device_reachable(device):
-                results[name] = {"status": "skipped", "reason": "unreachable"}
                 continue
             last_success = state.get("devices", {}).get(name, {}).get("last_success_at")
             if last_success and not older_than(last_success, reload_after):

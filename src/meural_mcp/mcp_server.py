@@ -1,7 +1,25 @@
+import os
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .api_client import RemoteApiClient, verify_tls_from_value
 from .manager import ManagerService
+
+
+def _remote_client(
+    api_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    verify_tls: Optional[bool] = None,
+) -> Optional[RemoteApiClient]:
+    api_url = api_url or os.getenv("MEURAL_MCP_API_URL")
+    if not api_url:
+        return None
+    api_token = api_token or os.getenv("MEURAL_MCP_API_TOKEN")
+    if not api_token:
+        raise ValueError("MEURAL_MCP_API_TOKEN is required when MEURAL_MCP_API_URL is set")
+    if verify_tls is None:
+        verify_tls = verify_tls_from_value(os.getenv("MEURAL_MCP_API_VERIFY_TLS"))
+    return RemoteApiClient(api_url, api_token, verify_tls=verify_tls)
 
 
 def _service(
@@ -16,7 +34,13 @@ def _service(
 def mcp_list_devices(
     storage_dir: str | Path | None = None,
     config: Optional[dict[str, Any]] = None,
+    api_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    verify_tls: Optional[bool] = None,
 ) -> dict[str, Any]:
+    remote = _remote_client(api_url, api_token, verify_tls)
+    if remote:
+        return remote.summary_status()
     return _service(storage_dir=storage_dir, config=config).summary_status()
 
 
@@ -24,7 +48,13 @@ def mcp_get_device_status(
     name: str,
     storage_dir: str | Path | None = None,
     config: Optional[dict[str, Any]] = None,
+    api_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    verify_tls: Optional[bool] = None,
 ) -> dict[str, Any]:
+    remote = _remote_client(api_url, api_token, verify_tls)
+    if remote:
+        return remote.device_status(name)
     try:
         return _service(storage_dir=storage_dir, config=config).device_status(name)
     except KeyError as exc:
@@ -35,7 +65,13 @@ def mcp_get_device_image(
     name: str,
     storage_dir: str | Path | None = None,
     config: Optional[dict[str, Any]] = None,
+    api_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    verify_tls: Optional[bool] = None,
 ) -> dict[str, Any]:
+    remote = _remote_client(api_url, api_token, verify_tls)
+    if remote:
+        return {"status": "ok", "device": name, "image_url": f"{remote.base_url}/devices/{name}/image"}
     try:
         service = _service(storage_dir=storage_dir, config=config)
         image = service.image_path(name)
@@ -50,10 +86,16 @@ def mcp_set_device_image(
     storage_dir: str | Path | None = None,
     config: Optional[dict[str, Any]] = None,
     preview_writer: Optional[Callable[[dict, Path], dict]] = None,
+    api_url: Optional[str] = None,
+    api_token: Optional[str] = None,
+    verify_tls: Optional[bool] = None,
 ) -> dict[str, Any]:
     path = Path(image_path).expanduser()
     if not path.exists():
         return {"status": "failed", "reason": "image_not_found", "error": str(path)}
+    remote = _remote_client(api_url, api_token, verify_tls)
+    if remote:
+        return remote.set_device_image(name, path)
     try:
         return _service(storage_dir=storage_dir, config=config, preview_writer=preview_writer).assign_image(name, path)
     except KeyError as exc:

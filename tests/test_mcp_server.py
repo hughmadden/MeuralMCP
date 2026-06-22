@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from meural_mcp.mcp_server import mcp_get_device_status, mcp_list_devices, mcp_set_device_image
 
@@ -68,6 +68,33 @@ class McpToolTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["reason"], "preview_failed")
+
+    def test_set_device_image_remote_api_uploads_local_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "landscape.png"
+            write_png(image, 1200, 800)
+            response = Mock()
+            response.status_code = 200
+            response.json.return_value = {"status": "loaded", "device": "spare"}
+
+            with patch("meural_mcp.api_client.requests.request", return_value=response) as request:
+                result = mcp_set_device_image(
+                    "spare",
+                    str(image),
+                    api_url="https://homepi:9443",
+                    api_token="token",
+                    verify_tls=False,
+                )
+
+            self.assertEqual(result, {"status": "loaded", "device": "spare"})
+            method, url = request.call_args.args
+            kwargs = request.call_args.kwargs
+            self.assertEqual(method, "PUT")
+            self.assertEqual(url, "https://homepi:9443/devices/spare/image")
+            self.assertEqual(kwargs["headers"]["Authorization"], "Bearer token")
+            self.assertEqual(kwargs["headers"]["Content-Type"], "image/png")
+            self.assertEqual(kwargs["data"], image.read_bytes())
+            self.assertFalse(kwargs["verify"])
 
 
 if __name__ == "__main__":

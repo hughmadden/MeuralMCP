@@ -149,6 +149,17 @@ Run the MCP server for a coding agent:
 meural-mcp --storage-dir ~/.config/meural-mcp mcp --transport stdio
 ```
 
+If the MCP server runs on your workstation while the daemon/API run on another
+host, point it at the remote API instead. In this mode, `set_device_image` reads
+the image path from the workstation and uploads the bytes to MeuralMCP:
+
+```bash
+export MEURAL_MCP_API_URL="https://homepi:9443"
+export MEURAL_MCP_API_TOKEN="..."
+export MEURAL_MCP_API_VERIFY_TLS=false  # only for self-signed lab certs
+meural-mcp mcp --transport stdio
+```
+
 MCP tools include:
 
 - `list_devices`

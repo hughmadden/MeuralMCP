@@ -1,0 +1,40 @@
+# MeuralMCP
+
+> MeuralMCP is a Python daemon, REST API, and MCP server for locally managing
+> Netgear Meural Canvas preview images. It polls frames because previews can be
+> lost after sleep or boot, stores one assigned image per device, validates image
+> orientation, and exposes MCP tools for coding agents.
+
+This repository is intended to be public and generic. Do not add real device
+names, IP addresses, cloud IDs, serial numbers, MAC addresses, API tokens,
+passwords, cookies, private images, or generated runtime state.
+
+## Primary Documentation
+
+- [README.md](README.md): user setup, cloud init, service samples, HTTPS reverse proxy guidance, FAQ, and credits.
+- [AGENTS.md](AGENTS.md): contributor and coding-agent safety rules for keeping the repo public-safe.
+- [examples/config.example.json](examples/config.example.json): generic configuration shape.
+
+## Runtime Surfaces
+
+- [src/meural_mcp/cli.py](src/meural_mcp/cli.py): command-line entrypoint for init, daemon, REST API, and MCP server.
+- [src/meural_mcp/manager.py](src/meural_mcp/manager.py): core device config, image assignment, preview reload, reachability, blank gallery, and timeout logic.
+- [src/meural_mcp/mcp_server.py](src/meural_mcp/mcp_server.py): MCP tools for listing devices, reading status, reading assigned image paths, and setting current images.
+- [src/meural_mcp/api.py](src/meural_mcp/api.py): token-protected REST API.
+- [src/meural_mcp/cloud.py](src/meural_mcp/cloud.py): Meural cloud authentication and setup calls.
+- [src/meural_mcp/local.py](src/meural_mcp/local.py): local frame `/remote` calls.
+
+## Deployment Examples
+
+- [examples/systemd/meural-mcp-daemon.service](examples/systemd/meural-mcp-daemon.service): system daemon sample.
+- [examples/systemd/meural-mcp-api.service](examples/systemd/meural-mcp-api.service): localhost REST API service sample.
+- [examples/systemd/meural-mcp-user.service](examples/systemd/meural-mcp-user.service): user-level daemon sample.
+- [examples/reverse-proxy/Caddyfile](examples/reverse-proxy/Caddyfile): Caddy HTTPS reverse proxy sample.
+- [examples/reverse-proxy/nginx.conf](examples/reverse-proxy/nginx.conf): nginx HTTPS reverse proxy sample.
+
+## Tests
+
+- [tests/test_manager.py](tests/test_manager.py): manager behavior, image validation, cloud setup, and reachability.
+- [tests/test_mcp_server.py](tests/test_mcp_server.py): MCP tool behavior and image-write error contracts.
+- [tests/test_cli.py](tests/test_cli.py): CLI init and systemd helper behavior.
+- [tests/test_api.py](tests/test_api.py): REST API token authentication.

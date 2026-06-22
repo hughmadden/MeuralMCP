@@ -1,0 +1,199 @@
+# MeuralMCP
+
+Small LAN-first daemon, REST API, and MCP server for keeping Meural Canvas
+previews loaded.
+
+## Features
+
+- Quiet daemon loop that retries often-failing frames without noisy logs.
+- REST API protected by a shared token.
+- MCP tools for coding agents to inspect devices and set the current image.
+- Per-device current image storage.
+- Orientation validation before writing a preview.
+- In-memory/status tracking for LAN reachability failures.
+- Optional cloud init that creates/assigns one-item blank galleries for landscape
+  and portrait devices, sets hold durations, and syncs configured cloud device IDs.
+
+## Credits
+
+This project builds on public Meural local-control work from the community:
+
+- [Guy Sie's HA-meural](https://github.com/GuySie/ha-meural), introduced on the
+  [Home Assistant forum](https://community.home-assistant.io/t/ha-meural-custom-integration-for-netgear-meural-canvas-digital-art-frames/200008),
+  demonstrated that Meural Canvas devices expose both a cloud API and a local
+  interface suitable for Home Assistant control.
+- [NETGEAR's support article](https://kb.netgear.com/000060746/Can-I-control-the-Canvas-without-a-mobile-app-or-gesture-control-and-if-so-how)
+  documents the built-in browser-accessible `/remote` controller on the same LAN.
+- [bigboxer23/meural-control](https://github.com/bigboxer23/meural-control)
+  documented the practical issue with transient preview/postcard display and the
+  more reliable single-playlist/gallery pattern.
+
+## Quick Start
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+
+meural-mcp --storage-dir ~/.config/meural-mcp init-local --api-token "change-me"
+```
+
+Package dependencies are declared in `pyproject.toml`; `pip install -e .` installs
+the CLI plus bounded runtime dependencies for FastAPI, Uvicorn, Requests, and MCP.
+
+`llms.txt` is included as a concise map for coding agents and documentation
+ingestion. `AGENTS.md` contains contributor guardrails for keeping this repo
+public-safe.
+
+Edit `~/.config/meural-mcp/config.json` to set your device names, cloud IDs,
+LAN IPs, orientations, and enabled flags. `init-local` starts with an empty
+device list; `init-cloud` can discover your device list automatically.
+
+Run the API:
+
+```bash
+meural-mcp --storage-dir ~/.config/meural-mcp serve --host 127.0.0.1 --port 8733
+```
+
+Keep the REST API bound to localhost where possible. If you want to expose it to
+other machines, put nginx or Caddy in front of it and terminate HTTPS there
+rather than binding the API directly to the LAN as plain HTTP.
+
+Check summary status:
+
+```bash
+curl http://127.0.0.1:8733/status \
+  -H "Authorization: Bearer change-me"
+```
+
+Run the daemon:
+
+```bash
+meural-mcp --storage-dir ~/.config/meural-mcp daemon
+```
+
+## Services and HTTPS
+
+Sample service and reverse-proxy files are provided in `examples/`:
+
+- `examples/systemd/meural-mcp-daemon.service`
+- `examples/systemd/meural-mcp-api.service`
+- `examples/systemd/meural-mcp-user.service`
+- `examples/reverse-proxy/Caddyfile`
+- `examples/reverse-proxy/nginx.conf`
+
+The daemon and API are separate processes. The daemon keeps previews loaded; the
+API serves local status and image writes. In the system service examples, both
+use `/var/lib/meural-mcp` for config/state and expect the project installed at
+`/opt/meural-mcp/.venv/bin/meural-mcp`.
+
+For a system install:
+
+```bash
+sudo useradd --system --home /var/lib/meural-mcp --create-home --shell /usr/sbin/nologin meural-mcp
+sudo install -d -o meural-mcp -g meural-mcp /var/lib/meural-mcp
+sudo cp examples/systemd/meural-mcp-*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now meural-mcp-daemon.service meural-mcp-api.service
+```
+
+For a user install:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp examples/systemd/meural-mcp-user.service ~/.config/systemd/user/meural-mcp.service
+systemctl --user daemon-reload
+systemctl --user enable --now meural-mcp.service
+```
+
+The user service only starts the polling daemon. Run the API separately, or add a
+second user unit if you want the REST API under systemd too.
+
+For LAN access, keep `meural-mcp-api.service` on `127.0.0.1:8733` and expose it
+through HTTPS with Caddy or nginx. The shared token is still required by
+MeuralMCP, but TLS should protect the token in transit.
+
+Run the MCP server for a coding agent:
+
+```bash
+meural-mcp --storage-dir ~/.config/meural-mcp mcp --transport stdio
+```
+
+MCP tools include:
+
+- `list_devices`
+- `get_device_status`
+- `get_device_image`
+- `set_device_image`
+
+`set_device_image` stores the image only after validating orientation and
+successfully loading the preview to the device. It returns a failed result if the
+image cannot be parsed/thumbnailed, the orientation is wrong, the device is
+unknown, the file is missing, or the preview write fails.
+
+Upload an image:
+
+```bash
+curl -X PUT http://127.0.0.1:8733/devices/canvas-1/image \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @image.jpg
+```
+
+## Optional Cloud Init
+
+Cloud init requires a Meural username/password.
+
+```bash
+meural-mcp --storage-dir ~/.config/meural-mcp init-cloud \
+  --username "$MEURAL_USERNAME" \
+  --password "$MEURAL_PASSWORD"
+```
+
+On a Linux host with user systemd available, add `--install-systemd` to write,
+enable, and start `meural-mcp.service`. Interactive runs prompt for this unless
+`--no-systemd-prompt` is supplied.
+
+`init-cloud`:
+
+1. Authenticates to Meural cloud with the supplied username/password.
+2. Discovers cloud device IDs, names, LAN IPs, and writes them to `config.json`.
+3. Generates a shared API token, writes it to `config.json`, and prints it so you can save it for REST/MCP clients.
+4. If `config.json` already exists, writes a timestamped backup first.
+5. Finds or creates landscape and/or portrait blank galleries, depending on the discovered devices.
+6. Ensures each blank gallery has a single correctly oriented blank image.
+7. Assigns each configured device to the matching blank gallery for its orientation.
+8. Sets `imageDuration=86400`, `previewDuration=86400`, `overlayDuration=120`.
+9. Syncs configured devices.
+
+After init, edit `config.json` if you need to adjust device names, cloud IDs,
+LAN IPs, orientations, or enabled flags.
+
+## FAQ
+
+### Why does this poll the devices?
+
+Polling is not elegant, but it is deliberate. Meural frames can lose the loaded
+preview after sleep, boot, or other internal resets, so the daemon checks
+periodically and reloads the assigned preview when needed.
+
+### Why does setup use a blank image/gallery?
+
+The blank image is a holding pattern. It keeps the device on a single neutral
+gallery by default, which makes the transition to locally managed previews a
+little less awkward than leaving whatever cloud playlist happened to be active.
+
+### Can I block the frames from the internet after setup?
+
+Probably, but this still needs testing. Once cloud init has discovered devices,
+set the timeout values, and assigned the blank galleries, users may be able to
+firewall the Meural devices from the internet so future Meural cloud changes
+cannot alter or disturb them.
+
+### What would make this better?
+
+A better solution likely needs hardware-level investigation. A community
+teardown/hacking post describes a Meural RK3288 board and locating `G`, `R`, and
+`T` test pads for ground, RX, and TX serial console access. Someone needs to
+open a device, attach to those serial pins, and see whether there is a cleaner
+local-control path than periodic preview reloads.

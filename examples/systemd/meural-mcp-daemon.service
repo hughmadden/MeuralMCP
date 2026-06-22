@@ -1,0 +1,20 @@
+[Unit]
+Description=MeuralMCP preview reload daemon
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=meural-mcp
+Group=meural-mcp
+Environment=MEURAL_MCP_STORAGE_DIR=/var/lib/meural-mcp
+ExecStart=/opt/meural-mcp/.venv/bin/meural-mcp --storage-dir /var/lib/meural-mcp daemon
+Restart=always
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/meural-mcp
+
+[Install]
+WantedBy=multi-user.target

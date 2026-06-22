@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+*.env
+state.json
+images/
+config.json
+blank-black-*.png
+.DS_Store

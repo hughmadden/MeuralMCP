@@ -1,0 +1,43 @@
+{
+  "poll_seconds": 60,
+  "reload_after_seconds": 82800,
+  "timeouts": {
+    "imageDuration": 86400,
+    "previewDuration": 86400,
+    "overlayDuration": 120
+  },
+  "blank_galleries": {
+    "landscape": {
+      "name": "MeuralMCP Blank Hold Landscape",
+      "description": "Single blank landscape image managed by meural-mcp.",
+      "orientation": "landscape",
+      "width": 1920,
+      "height": 1080
+    },
+    "portrait": {
+      "name": "MeuralMCP Blank Hold Portrait",
+      "description": "Single blank portrait image managed by meural-mcp.",
+      "orientation": "portrait",
+      "width": 1080,
+      "height": 1920
+    }
+  },
+  "devices": [
+    {
+      "name": "canvas-1",
+      "display_name": "Canvas 1",
+      "cloud_id": null,
+      "local_ip": null,
+      "orientation": "landscape",
+      "enabled": true
+    },
+    {
+      "name": "canvas-2",
+      "display_name": "Canvas 2",
+      "cloud_id": null,
+      "local_ip": null,
+      "orientation": "landscape",
+      "enabled": true
+    }
+  ]
+}

@@ -315,10 +315,11 @@ class ManagerService:
                 results[name] = {"status": "skipped", "reason": "unreachable"}
                 continue
             sleep_schedule = self._sleep_schedule_for(device)
-            if sleep_schedule and self._in_sleep_window(sleep_schedule):
+            device_state = state.get("devices", {}).get(name, {})
+            if sleep_schedule and (self._sleep_until_active(device_state) or self._in_sleep_window(sleep_schedule)):
                 results[name] = self.sleep_device(name)
                 continue
-            if sleep_schedule and state.get("devices", {}).get(name, {}).get("last_sleep_action") == "sleep":
+            if sleep_schedule and device_state.get("last_sleep_action") == "sleep":
                 self.wake_device(name)
             image = self.image_path(name)
             if not image:
@@ -405,6 +406,21 @@ class ManagerService:
             return start <= local_now < end
         return local_now >= start or local_now < end
 
+    def _sleep_until_active(self, device_state: dict[str, Any]) -> bool:
+        sleep_until = device_state.get("sleep_until")
+        if not sleep_until:
+            return False
+        try:
+            until = datetime.fromisoformat(sleep_until)
+        except Exception:
+            return False
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        now = self.now_provider()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return now < until
+
     def _check_reachability(self, device: dict) -> bool:
         ip = device.get("local_ip")
         if not ip:
@@ -453,6 +469,8 @@ class ManagerService:
                 "last_error": None,
             }
         )
+        if action == "wake":
+            current.pop("sleep_until", None)
         self.save_state(state)
 
     def _record_reachability(self, name: str, reachable: bool, error: Optional[str] = None) -> None:

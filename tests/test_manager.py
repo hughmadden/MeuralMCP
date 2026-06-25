@@ -355,6 +355,61 @@ class StatusTests(unittest.TestCase):
             wake_writer.assert_not_called()
             preview_writer.assert_called_once()
 
+    def test_poll_once_honors_one_time_sleep_until_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "landscape.png"
+            write_png(image, 1200, 800)
+            config = {
+                "sleep_schedules": [
+                    {
+                        "enabled": True,
+                        "timezone": "Australia/Sydney",
+                        "sleep_start": "19:30",
+                        "wake_time": "07:00",
+                        "devices": ["canvas-1"],
+                    }
+                ],
+                "reload_after_seconds": 0,
+                "devices": [
+                    {
+                        "name": "canvas-1",
+                        "display_name": "Canvas 1",
+                        "cloud_id": None,
+                        "local_ip": "192.0.2.10",
+                        "orientation": "landscape",
+                        "enabled": True,
+                    }
+                ],
+            }
+            preview_writer = Mock(return_value={"status": "pass"})
+            sleep_writer = Mock(return_value={"status": "pass"})
+            service = ManagerService(
+                root=Path(tmp),
+                config=config,
+                preview_writer=preview_writer,
+                reachability_checker=Mock(return_value=True),
+                sleep_writer=sleep_writer,
+                now_provider=lambda: datetime(2026, 6, 25, 6, 30, tzinfo=timezone.utc),
+            )
+            service.images_dir.mkdir(exist_ok=True)
+            (service.images_dir / "canvas-1.png").write_bytes(image.read_bytes())
+            service.save_state(
+                {
+                    "devices": {
+                        "canvas-1": {
+                            "sleep_until": "2026-06-25T21:00:00+00:00",
+                            "last_sleep_action": "sleep",
+                        }
+                    }
+                }
+            )
+
+            result = service.poll_once()
+
+            self.assertEqual(result["canvas-1"]["status"], "sleeping")
+            sleep_writer.assert_called_once()
+            preview_writer.assert_not_called()
+
 
 class InitTests(unittest.TestCase):
     def test_cloud_timeout_init_updates_and_syncs_configured_devices(self):

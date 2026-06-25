@@ -184,6 +184,40 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(result["canvas-1"]["reason"], "unreachable")
             self.assertFalse(service.state()["devices"]["canvas-1"]["reachable"])
 
+    def test_poll_once_reload_after_zero_reloads_even_after_recent_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "landscape.png"
+            write_png(image, 1200, 800)
+            config = {
+                "reload_after_seconds": 0,
+                "devices": [
+                    {
+                        "name": "canvas-1",
+                        "display_name": "Canvas 1",
+                        "cloud_id": None,
+                        "local_ip": "192.0.2.10",
+                        "orientation": "landscape",
+                        "enabled": True,
+                    }
+                ],
+            }
+            preview_writer = Mock(return_value={"status": "pass"})
+            service = ManagerService(
+                root=Path(tmp),
+                config=config,
+                preview_writer=preview_writer,
+                reachability_checker=Mock(return_value=True),
+            )
+            service.images_dir.mkdir(exist_ok=True)
+            target = service.images_dir / "canvas-1.png"
+            target.write_bytes(image.read_bytes())
+            service.save_state({"devices": {"canvas-1": {"last_success_at": "2999-01-01T00:00:00+00:00"}}})
+
+            result = service.poll_once()
+
+            self.assertEqual(result["canvas-1"]["status"], "loaded")
+            preview_writer.assert_called_once()
+
 
 class InitTests(unittest.TestCase):
     def test_cloud_timeout_init_updates_and_syncs_configured_devices(self):

@@ -50,7 +50,7 @@ def storage_dir() -> Path:
 def default_config() -> dict[str, Any]:
     return {
         "poll_seconds": 60,
-        "reload_after_seconds": 23 * 60 * 60,
+        "reload_after_seconds": 0,
         "timeouts": dict(DEFAULT_TIMEOUTS),
         "blank_galleries": json.loads(json.dumps(DEFAULT_BLANK_GALLERIES)),
         "devices": [],
@@ -311,7 +311,7 @@ class ManagerService:
                 results[name] = {"status": "skipped", "reason": "no_image"}
                 continue
             last_success = state.get("devices", {}).get(name, {}).get("last_success_at")
-            if last_success and not older_than(last_success, reload_after):
+            if reload_after > 0 and last_success and not older_than(last_success, reload_after):
                 results[name] = {"status": "skipped", "reason": "fresh"}
                 continue
             results[name] = self.preview_stored_image(name)

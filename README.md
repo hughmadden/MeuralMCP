@@ -99,6 +99,12 @@ Run the daemon:
 meural-mcp --storage-dir ~/.config/meural-mcp daemon
 ```
 
+By default the daemon attempts to reload each reachable enabled frame that has
+an assigned image on every poll. This is intentionally chatty because Meural
+frames can silently lose postcard previews after sleep, boot, or internal
+display resets. Set `reload_after_seconds` above `0` in `config.json` only if
+you prefer throttled reloads.
+
 ## Services and HTTPS
 
 Sample service and reverse-proxy files are provided in `examples/`:
@@ -245,7 +251,8 @@ cloud IDs, LAN IPs, orientations, or enabled flags before running the daemon.
 
 Polling is not elegant, but it is deliberate. Meural frames can lose the loaded
 preview after sleep, boot, or other internal resets, so the daemon checks
-periodically and reloads the assigned preview when needed.
+periodically and reloads the assigned preview. The default config reloads on
+every poll for reachable enabled frames with assigned images.
 
 ### Why does setup use a blank image/gallery?
 

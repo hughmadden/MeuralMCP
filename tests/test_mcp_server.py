@@ -127,22 +127,22 @@ class McpToolTests(unittest.TestCase):
             write_png(image, 1200, 800)
             response = Mock()
             response.status_code = 200
-            response.json.return_value = {"status": "loaded", "device": "spare"}
+            response.json.return_value = {"status": "loaded", "device": "canvas-remote"}
 
             with patch("meural_mcp.api_client.requests.request", return_value=response) as request:
                 result = mcp_set_device_image(
-                    "spare",
+                    "canvas-remote",
                     str(image),
                     api_url="https://meural-mcp.example.test",
                     api_token="token",
                     verify_tls=False,
                 )
 
-            self.assertEqual(result, {"status": "loaded", "device": "spare"})
+            self.assertEqual(result, {"status": "loaded", "device": "canvas-remote"})
             method, url = request.call_args.args
             kwargs = request.call_args.kwargs
             self.assertEqual(method, "PUT")
-            self.assertEqual(url, "https://meural-mcp.example.test/devices/spare/image")
+            self.assertEqual(url, "https://meural-mcp.example.test/devices/canvas-remote/image")
             self.assertEqual(kwargs["headers"]["Authorization"], "Bearer token")
             self.assertEqual(kwargs["headers"]["Content-Type"], "image/png")
             self.assertEqual(kwargs["data"], image.read_bytes())

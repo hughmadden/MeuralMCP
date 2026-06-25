@@ -26,8 +26,13 @@ class FrameLocalClient:
     def current_gallery(self) -> dict:
         return self.get("/remote/get_gallery_status_json").get("response", {})
 
+    def sleep(self) -> dict:
+        return self.get("/remote/control_command/suspend")
+
+    def wake(self) -> dict:
+        return self.get("/remote/control_command/resume")
+
     def postcard(self, image_path: Path) -> dict:
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         return self.post("/remote/postcard", data={"photo": encoded}, timeout=30)
-
 

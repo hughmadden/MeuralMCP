@@ -14,6 +14,7 @@ passwords, cookies, private images, or generated runtime state.
 - [README.md](README.md): user setup, cloud init, service samples, HTTPS reverse proxy guidance, FAQ, and credits.
 - [AGENTS.md](AGENTS.md): contributor and coding-agent safety rules for keeping the repo public-safe.
 - [examples/config.example.json](examples/config.example.json): generic configuration shape.
+- [docs/sleep-schedules.md](docs/sleep-schedules.md): optional per-device sleep window behavior.
 
 ## Runtime Surfaces
 

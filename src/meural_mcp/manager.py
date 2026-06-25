@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from .cloud import MeuralCloudClient
 from .local import FrameLocalClient
@@ -53,6 +54,7 @@ def default_config() -> dict[str, Any]:
         "reload_after_seconds": 0,
         "timeouts": dict(DEFAULT_TIMEOUTS),
         "blank_galleries": json.loads(json.dumps(DEFAULT_BLANK_GALLERIES)),
+        "sleep_schedules": [],
         "devices": [],
     }
 
@@ -161,12 +163,18 @@ class ManagerService:
         cloud_client: Optional[MeuralCloudClient] = None,
         preview_writer: Optional[Callable[[dict, Path], dict]] = None,
         reachability_checker: Optional[Callable[[dict], bool]] = None,
+        sleep_writer: Optional[Callable[[dict], dict]] = None,
+        wake_writer: Optional[Callable[[dict], dict]] = None,
+        now_provider: Optional[Callable[[], datetime]] = None,
     ):
         self.root = root or storage_dir()
         self.config = config or load_config(self.root)
         self.cloud_client = cloud_client
         self.preview_writer = preview_writer or self._write_preview_to_frame
         self.reachability_checker = reachability_checker or self._check_reachability
+        self.sleep_writer = sleep_writer or self._sleep_frame
+        self.wake_writer = wake_writer or self._wake_frame
+        self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self.images_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -306,6 +314,12 @@ class ManagerService:
             if not self._device_reachable(device):
                 results[name] = {"status": "skipped", "reason": "unreachable"}
                 continue
+            sleep_schedule = self._sleep_schedule_for(device)
+            if sleep_schedule and self._in_sleep_window(sleep_schedule):
+                results[name] = self.sleep_device(name)
+                continue
+            if sleep_schedule and state.get("devices", {}).get(name, {}).get("last_sleep_action") == "sleep":
+                self.wake_device(name)
             image = self.image_path(name)
             if not image:
                 results[name] = {"status": "skipped", "reason": "no_image"}
@@ -334,6 +348,62 @@ class ManagerService:
         if not ip:
             raise TimeoutError("no local IP for device")
         return FrameLocalClient(ip, timeout=5).postcard(image_path)
+
+    def sleep_device(self, name: str) -> dict[str, Any]:
+        device = self.device(name)
+        try:
+            result = self.sleep_writer(device)
+            self._record_sleep_action(device["name"], "sleep", result)
+            return {"status": "sleeping", "device": device["name"], "sleep": result}
+        except Exception as exc:
+            self._record_failure(device["name"], "sleep_failed", str(exc))
+            return {"status": "failed", "reason": "sleep_failed", "error": str(exc)}
+
+    def wake_device(self, name: str) -> dict[str, Any]:
+        device = self.device(name)
+        try:
+            result = self.wake_writer(device)
+            self._record_sleep_action(device["name"], "wake", result)
+            return {"status": "awake", "device": device["name"], "wake": result}
+        except Exception as exc:
+            self._record_failure(device["name"], "wake_failed", str(exc))
+            return {"status": "failed", "reason": "wake_failed", "error": str(exc)}
+
+    def _sleep_frame(self, device: dict) -> dict:
+        ip = device.get("local_ip")
+        if not ip:
+            raise TimeoutError("no local IP for device")
+        return FrameLocalClient(ip, timeout=5).sleep()
+
+    def _wake_frame(self, device: dict) -> dict:
+        ip = device.get("local_ip")
+        if not ip:
+            raise TimeoutError("no local IP for device")
+        return FrameLocalClient(ip, timeout=5).wake()
+
+    def _sleep_schedule_for(self, device: dict) -> Optional[dict[str, Any]]:
+        aliases = {canonical_name(device["name"]), canonical_name(device.get("display_name", ""))}
+        for schedule in self.config.get("sleep_schedules", []):
+            if not schedule.get("enabled", True):
+                continue
+            devices = {canonical_name(name) for name in schedule.get("devices", [])}
+            if aliases & devices:
+                return schedule
+        return None
+
+    def _in_sleep_window(self, schedule: dict[str, Any]) -> bool:
+        zone = ZoneInfo(schedule.get("timezone", "UTC"))
+        now = self.now_provider()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        local_now = now.astimezone(zone).time()
+        start = parse_hhmm(schedule.get("sleep_start", "19:30"))
+        end = parse_hhmm(schedule.get("wake_time", "07:00"))
+        if start == end:
+            return True
+        if start < end:
+            return start <= local_now < end
+        return local_now >= start or local_now < end
 
     def _check_reachability(self, device: dict) -> bool:
         ip = device.get("local_ip")
@@ -372,6 +442,19 @@ class ManagerService:
         current.update({"last_failure_at": now_iso(), "last_error": {"reason": reason, "error": error}})
         self.save_state(state)
 
+    def _record_sleep_action(self, name: str, action: str, result: dict) -> None:
+        state = self.state()
+        current = state.setdefault("devices", {}).setdefault(name, {})
+        current.update(
+            {
+                "last_sleep_action_at": now_iso(),
+                "last_sleep_action": action,
+                "sleep": result,
+                "last_error": None,
+            }
+        )
+        self.save_state(state)
+
     def _record_reachability(self, name: str, reachable: bool, error: Optional[str] = None) -> None:
         state = self.state()
         current = state.setdefault("devices", {}).setdefault(name, {})
@@ -392,6 +475,10 @@ def older_than(timestamp: str, seconds: int) -> bool:
     except Exception:
         return True
     return (datetime.now(timezone.utc) - dt).total_seconds() >= seconds
+
+
+def parse_hhmm(value: str):
+    return datetime.strptime(value, "%H:%M").time()
 
 
 def refresh_device_ids_from_cloud(cloud_client: MeuralCloudClient, config: dict[str, Any]) -> dict:

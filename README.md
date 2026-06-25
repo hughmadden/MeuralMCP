@@ -105,6 +105,10 @@ frames can silently lose postcard previews after sleep, boot, or internal
 display resets. Set `reload_after_seconds` above `0` in `config.json` only if
 you prefer throttled reloads.
 
+Optional sleep schedules can suspend selected frames during a local-time window
+and prevent image writes until the wake time. See
+[`docs/sleep-schedules.md`](docs/sleep-schedules.md).
+
 ## Services and HTTPS
 
 Sample service and reverse-proxy files are provided in `examples/`:

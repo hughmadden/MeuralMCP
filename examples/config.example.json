@@ -1,6 +1,6 @@
 {
   "poll_seconds": 60,
-  "reload_after_seconds": 82800,
+  "reload_after_seconds": 0,
   "timeouts": {
     "imageDuration": 86400,
     "previewDuration": 86400,
@@ -22,6 +22,16 @@
       "height": 1920
     }
   },
+  "sleep_schedules": [
+    {
+      "name": "bedtime",
+      "enabled": false,
+      "timezone": "Australia/Sydney",
+      "sleep_start": "19:30",
+      "wake_time": "07:00",
+      "devices": ["canvas-1"]
+    }
+  ],
   "devices": [
     {
       "name": "canvas-1",

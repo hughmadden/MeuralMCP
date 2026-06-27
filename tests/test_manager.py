@@ -219,6 +219,53 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(result["canvas-1"]["status"], "loaded")
             preview_writer.assert_called_once()
 
+    def test_poll_once_repairs_stale_blank_gallery_item_before_preview(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "landscape.png"
+            write_png(image, 1200, 800)
+            config = {
+                "reload_after_seconds": 0,
+                "blank_galleries": {
+                    "landscape": {"id": "gallery-1"},
+                },
+                "devices": [
+                    {
+                        "name": "canvas-1",
+                        "display_name": "Canvas 1",
+                        "cloud_id": None,
+                        "local_ip": "192.0.2.10",
+                        "orientation": "landscape",
+                        "enabled": True,
+                    }
+                ],
+            }
+            frame = Mock()
+            frame.current_gallery.return_value = {
+                "current_gallery": "gallery-1",
+                "current_item": "stale-item",
+                "current_gallery_name": "Blank Hold",
+            }
+            frame.gallery_items.return_value = [
+                {"id": "blank-item", "title": "blank-black-landscape-1920x1080"},
+            ]
+            frame.change_item.return_value = {"status": "pass", "response": ""}
+            frame.postcard.return_value = {"status": "pass"}
+            service = ManagerService(
+                root=Path(tmp),
+                config=config,
+                reachability_checker=Mock(return_value=True),
+                local_client_factory=Mock(return_value=frame),
+            )
+            service.images_dir.mkdir(exist_ok=True)
+            (service.images_dir / "canvas-1.png").write_bytes(image.read_bytes())
+
+            result = service.poll_once()
+
+            self.assertEqual(result["canvas-1"]["status"], "loaded")
+            frame.change_item.assert_called_once_with("blank-item")
+            frame.postcard.assert_called_once()
+            self.assertEqual(service.state()["devices"]["canvas-1"]["gallery"]["current_item"], "blank-item")
+
     def test_poll_once_sleeps_scheduled_device_and_skips_preview_during_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             image = Path(tmp) / "landscape.png"

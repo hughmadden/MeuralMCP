@@ -166,6 +166,7 @@ class ManagerService:
         sleep_writer: Optional[Callable[[dict], dict]] = None,
         wake_writer: Optional[Callable[[dict], dict]] = None,
         now_provider: Optional[Callable[[], datetime]] = None,
+        local_client_factory: Optional[Callable[[str, int], FrameLocalClient]] = None,
     ):
         self.root = root or storage_dir()
         self.config = config or load_config(self.root)
@@ -175,6 +176,7 @@ class ManagerService:
         self.sleep_writer = sleep_writer or self._sleep_frame
         self.wake_writer = wake_writer or self._wake_frame
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
+        self.local_client_factory = local_client_factory or (lambda ip, timeout=5: FrameLocalClient(ip, timeout=timeout))
         self.images_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -342,13 +344,9 @@ class ManagerService:
             time.sleep(poll_seconds)
 
     def _write_preview_to_frame(self, device: dict, image_path: Path) -> dict:
-        ip = device.get("local_ip")
-        if not ip and self.cloud_client and device.get("cloud_id"):
-            data = self.cloud_client.get_device(int(device["cloud_id"])).get("data", {})
-            ip = data.get("localIp") or (data.get("frameStatus") or {}).get("localIp")
-        if not ip:
-            raise TimeoutError("no local IP for device")
-        return FrameLocalClient(ip, timeout=5).postcard(image_path)
+        client = self._local_client(device, timeout=5)
+        self._assert_blank_gallery_item(device, client)
+        return client.postcard(image_path)
 
     def sleep_device(self, name: str) -> dict[str, Any]:
         device = self.device(name)
@@ -371,16 +369,39 @@ class ManagerService:
             return {"status": "failed", "reason": "wake_failed", "error": str(exc)}
 
     def _sleep_frame(self, device: dict) -> dict:
-        ip = device.get("local_ip")
-        if not ip:
-            raise TimeoutError("no local IP for device")
-        return FrameLocalClient(ip, timeout=5).sleep()
+        return self._local_client(device, timeout=5).sleep()
 
     def _wake_frame(self, device: dict) -> dict:
+        return self._local_client(device, timeout=5).wake()
+
+    def _local_client(self, device: dict, timeout: int = 5) -> FrameLocalClient:
         ip = device.get("local_ip")
+        if not ip and self.cloud_client and device.get("cloud_id"):
+            data = self.cloud_client.get_device(int(device["cloud_id"])).get("data", {})
+            ip = data.get("localIp") or (data.get("frameStatus") or {}).get("localIp")
         if not ip:
             raise TimeoutError("no local IP for device")
-        return FrameLocalClient(ip, timeout=5).wake()
+        return self.local_client_factory(ip, timeout)
+
+    def _assert_blank_gallery_item(self, device: dict, client: FrameLocalClient) -> None:
+        expected_gallery = self.config.get("blank_galleries", {}).get(normalise_orientation(device.get("orientation")), {})
+        expected_gallery_id = expected_gallery.get("id")
+        if not expected_gallery_id:
+            return
+        gallery = client.current_gallery()
+        if str(gallery.get("current_gallery")) != str(expected_gallery_id):
+            client.change_gallery(expected_gallery_id)
+            gallery = client.current_gallery()
+        items = client.gallery_items(expected_gallery_id)
+        if len(items) != 1:
+            self._record_gallery_state(device["name"], gallery, {"status": "skipped", "reason": "unexpected_item_count", "count": len(items)})
+            return
+        item_id = str(items[0].get("id"))
+        if item_id and str(gallery.get("current_item")) != item_id:
+            client.change_item(item_id)
+            gallery = dict(gallery)
+            gallery["current_item"] = item_id
+        self._record_gallery_state(device["name"], gallery, {"status": "pass", "item_id": item_id})
 
     def _sleep_schedule_for(self, device: dict) -> Optional[dict[str, Any]]:
         aliases = {canonical_name(device["name"]), canonical_name(device.get("display_name", ""))}
@@ -484,6 +505,12 @@ class ManagerService:
         )
         if not reachable:
             current["last_error"] = {"reason": "unreachable", "error": error}
+        self.save_state(state)
+
+    def _record_gallery_state(self, name: str, gallery: dict, result: dict) -> None:
+        state = self.state()
+        current = state.setdefault("devices", {}).setdefault(name, {})
+        current.update({"gallery": gallery, "gallery_check": result, "last_gallery_check_at": now_iso()})
         self.save_state(state)
 
 

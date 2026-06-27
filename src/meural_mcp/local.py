@@ -26,6 +26,15 @@ class FrameLocalClient:
     def current_gallery(self) -> dict:
         return self.get("/remote/get_gallery_status_json").get("response", {})
 
+    def gallery_items(self, gallery_id: str | int) -> list[dict]:
+        return self.get(f"/remote/get_frame_items_by_gallery_json/{gallery_id}/").get("response", [])
+
+    def change_gallery(self, gallery_id: str | int) -> dict:
+        return self.get(f"/remote/control_command/change_gallery/{gallery_id}")
+
+    def change_item(self, item_id: str | int) -> dict:
+        return self.get(f"/remote/control_command/change_item/{item_id}")
+
     def sleep(self) -> dict:
         return self.get("/remote/control_command/suspend")
 
@@ -35,4 +44,3 @@ class FrameLocalClient:
     def postcard(self, image_path: Path) -> dict:
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         return self.post("/remote/postcard", data={"photo": encoded}, timeout=30)
-

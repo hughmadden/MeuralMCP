@@ -1,3 +1,9 @@
+# TLS termination for the REST API and the hosted MCP endpoint.
+# Set MEURAL_MCP_ALLOWED_HOSTS=meural-mcp.example.test on the service, or the
+# transport's DNS-rebinding protection rejects requests carrying this Host.
 meural-mcp.example.test {
-	reverse_proxy 127.0.0.1:8733
+	reverse_proxy 127.0.0.1:8733 {
+		# stream the MCP response stream instead of buffering it
+		flush_interval -1
+	}
 }

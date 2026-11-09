@@ -1,542 +1,161 @@
+import json
+import struct
 import tempfile
 import unittest
-from datetime import datetime, timezone
+import zlib
 from pathlib import Path
 from unittest.mock import Mock
 
-from meural_mcp.manager import (
-    ManagerService,
-    auth_token_valid,
-    ensure_blank_gallery_assigned,
-    initialise_cloud_timeouts,
-    load_config,
-    normalise_orientation,
-)
+from meural_mcp.manager import ManagerService, canonical_name, image_dimensions, normalise_orientation
 
 
-SINGLE_DEVICE_CONFIG = {
-    "devices": [
-        {
-            "name": "canvas-1",
-            "display_name": "Canvas 1",
-            "cloud_id": None,
-            "local_ip": None,
-            "orientation": "landscape",
-            "enabled": True,
-        }
-    ]
-}
+def png_bytes(width: int, height: int) -> bytes:
+    # IHDR only; enough for dimension parsing
+    return b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, height) + b"\x00" * 9
 
 
-def write_png(path: Path, width: int, height: int, color: bytes = b"\x00\x00\x00") -> None:
-    import struct
-    import zlib
+class ManagerTestCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.service_root = self.root / "svc"
+        for sub in ("media", "by-id", "queues"):
+            (self.service_root / sub).mkdir(parents=True)
+        self.identify_calls = []
 
-    raw = b"".join(b"\x00" + color * width for _ in range(height))
+        def factory(ip, timeout=5):
+            client = Mock()
+            self.identify_calls.append(ip)
+            client.identify.return_value = {"product_key": f"KEY-{ip}", "orientation": "landscape"}
+            client.current_gallery.return_value = {"current_gallery": "1"}
+            return client
 
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
+        self.service = ManagerService(
+            root=self.root,
+            config={
+                "service": {"root": str(self.service_root), "port": 443, "bind": "0.0.0.0"},
+                "devices": [{
+                    "name": "canvas-1", "display_name": "Canvas 1", "local_ip": "192.0.2.10",
+                    "orientation": "landscape", "enabled": True, "product_key": "KEY-1",
+                }],
+            },
+            local_client_factory=factory,
+            thumbnailer=lambda src, dst, orientation: dst.write_bytes(b"thumb"),
+        )
 
-    png = b"\x89PNG\r\n\x1a\n"
-    png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-    png += chunk(b"IDAT", zlib.compress(raw, 9))
-    png += chunk(b"IEND", b"")
-    path.write_bytes(png)
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_publish_writes_gallery_and_queues_command(self):
+        self.service.set_image("canvas-1", png_bytes(1920, 1080), "a.png")
+        result = self.service.publish("canvas-1")
+
+        self.assertEqual(result["status"], "pass")
+        gid = result["gallery_id"]
+        gallery = json.loads((self.service_root / "by-id" / f"{gid}.json").read_text())
+        item = gallery["items"][0]
+        self.assertEqual(gallery["orientation"], 1)
+        self.assertEqual(item["orientation"], "landscape")
+        self.assertTrue(item["checksum"])
+        self.assertEqual(item["size"], (self.service_root / "media" / "canvas-1.png").stat().st_size)
+
+        queued = json.loads((self.service_root / "queues" / "KEY-1.json").read_text())
+        self.assertEqual(queued[0]["command"], "get_galleries")
+        self.assertEqual(queued[0]["parameter"], gid)
+
+    def test_gallery_id_is_stable(self):
+        self.assertEqual(self.service.gallery_id("canvas-1"), self.service.gallery_id("Canvas_1"))
+
+    def test_orientation_mismatch_rejected(self):
+        result = self.service.set_image("canvas-1", png_bytes(1080, 1920), "p.png")
+        self.assertEqual(result["reason"], "orientation_mismatch")
+        self.assertIsNone(self.service.image_path("canvas-1"))
+
+    def test_unreadable_image_rejected(self):
+        result = self.service.set_image("canvas-1", b"not an image", "x.jpg")
+        self.assertEqual(result["reason"], "unreadable_image")
+
+    def test_disabled_device_rejected(self):
+        self.service.config["devices"][0]["enabled"] = False
+        result = self.service.set_image("canvas-1", png_bytes(1920, 1080), "a.png")
+        self.assertEqual(result["reason"], "disabled")
+
+    def test_clear_image(self):
+        self.service.set_image("canvas-1", png_bytes(1920, 1080), "a.png")
+        self.assertEqual(self.service.clear_image("canvas-1")["status"], "pass")
+        self.assertIsNone(self.service.image_path("canvas-1"))
+
+    def test_unknown_device(self):
+        with self.assertRaises(KeyError):
+            self.service.device("nope")
+
+    def test_product_key_discovered_and_saved(self):
+        self.service.config["devices"][0]["product_key"] = None
+        self.service.config["devices"][0]["local_ip"] = "192.0.2.11"
+        self.service.product_key(self.service.device("canvas-1"))
+        self.assertIn("192.0.2.11", self.identify_calls)
+        self.assertTrue((self.root / "config.json").exists())
+
+    def test_sleep_and_wake(self):
+        self.assertEqual(self.service.sleep("canvas-1")["status"], "pass")
+        self.assertEqual(self.service.wake("canvas-1")["status"], "pass")
 
 
-class ConfigTests(unittest.TestCase):
-    def test_default_config_has_no_hard_coded_devices(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config = load_config(Path(tmp))
+class ScheduleTests(ManagerTestCase):
+    def test_set_and_get_schedule(self):
+        self.assertEqual(self.service.set_schedule("canvas-1", "22:30", "07:00", "Etc/UTC")["status"], "pass")
+        schedule = self.service.get_schedule("canvas-1")
+        self.assertEqual(schedule["sleep_start"], "22:30")
+        self.assertTrue(schedule["enabled"])
 
-            self.assertEqual(config["devices"], [])
+    def test_invalid_time_rejected(self):
+        self.assertEqual(self.service.set_schedule("canvas-1", "25:00", "07:00")["reason"], "invalid_time")
 
-    def test_load_config_creates_default_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config = load_config(Path(tmp))
+    def test_identical_times_rejected(self):
+        self.assertEqual(self.service.set_schedule("canvas-1", "07:00", "07:00")["reason"], "identical_times")
 
-            self.assertEqual(config["poll_seconds"], 60)
-            self.assertTrue((Path(tmp) / "config.json").exists())
+    def test_unknown_timezone_rejected(self):
+        self.assertEqual(self.service.set_schedule("canvas-1", "22:00", "07:00", "Mars/Base")["reason"], "unknown_timezone")
+
+    def test_clear_schedule(self):
+        self.service.set_schedule("canvas-1", "22:00", "07:00")
+        self.assertEqual(self.service.clear_schedule("canvas-1")["status"], "pass")
+        self.assertFalse(self.service.get_schedule("canvas-1")["enabled"])
+
+    def test_daemon_edge_applies_sleep_then_wake(self):
+        self.service.set_schedule("canvas-1", "22:00", "07:00", "Etc/UTC")
+        client = Mock()
+        self.service.local_client_factory = lambda ip, timeout=5: client
+        from datetime import datetime, timezone
+        self.service.now_provider = lambda: datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+        self.assertEqual(self.service.apply_sleep_schedules()[0]["asleep"], True)
+        client.sleep.assert_called_once()
+        self.service.now_provider = lambda: datetime(2026, 1, 2, 9, 0, tzinfo=timezone.utc)
+        self.assertEqual(self.service.apply_sleep_schedules()[0]["asleep"], False)
+        client.wake.assert_called_once()
+
+    def test_disabled_schedule_ignored(self):
+        self.service.set_schedule("canvas-1", "22:00", "07:00", enabled=False)
+        self.assertEqual(self.service.apply_sleep_schedules(), [])
 
 
-class AuthTests(unittest.TestCase):
-    def test_auth_token_accepts_bearer_or_custom_header(self):
-        self.assertTrue(auth_token_valid("secret", "Bearer secret", None))
-        self.assertTrue(auth_token_valid("secret", None, "secret"))
+class HelperTests(unittest.TestCase):
+    def test_canonical_name(self):
+        self.assertEqual(canonical_name(" Canvas_One "), "canvas-one")
 
-    def test_auth_token_rejects_missing_or_wrong_token(self):
-        self.assertFalse(auth_token_valid("secret", None, None))
-        self.assertFalse(auth_token_valid("secret", "Bearer wrong", None))
-
-
-class ImageAssignmentTests(unittest.TestCase):
-    def test_normalise_orientation_accepts_meural_cloud_values(self):
+    def test_normalise_orientation(self):
         self.assertEqual(normalise_orientation("horizontal"), "landscape")
-        self.assertEqual(normalise_orientation("vertical"), "portrait")
-        self.assertEqual(normalise_orientation("landscape"), "landscape")
         self.assertEqual(normalise_orientation("portrait"), "portrait")
 
-    def test_assign_image_rejects_wrong_orientation_before_preview(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "portrait.png"
-            write_png(image, 800, 1200)
-            preview_writer = Mock()
-            service = ManagerService(root=Path(tmp), config=SINGLE_DEVICE_CONFIG, preview_writer=preview_writer)
-
-            result = service.assign_image("canvas-1", image)
-
-            self.assertEqual(result["status"], "failed")
-            self.assertEqual(result["reason"], "orientation_mismatch")
-            preview_writer.assert_not_called()
-
-    def test_assign_image_promotes_file_only_after_successful_preview(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            preview_writer = Mock(return_value={"status": "pass"})
-            service = ManagerService(root=Path(tmp), config=SINGLE_DEVICE_CONFIG, preview_writer=preview_writer)
-
-            result = service.assign_image("canvas-1", image)
-
-            self.assertEqual(result["status"], "loaded")
-            self.assertTrue((Path(tmp) / "images" / "canvas-1.png").exists())
+    def test_image_dimensions_png(self):
+        self.assertEqual(image_dimensions_bytes(png_bytes(1080, 1920)), (1080, 1920))
 
 
-class StatusTests(unittest.TestCase):
-    def test_summary_status_includes_reachability_from_state(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service = ManagerService(root=Path(tmp), config=SINGLE_DEVICE_CONFIG)
-            service.save_state(
-                {
-                    "devices": {
-                        "canvas-1": {
-                            "reachable": False,
-                            "last_reachability_check_at": "2026-01-01T00:00:00+00:00",
-                            "last_error": {"reason": "unreachable", "error": "timeout"},
-                        }
-                    }
-                }
-            )
-
-            result = service.summary_status()
-
-            self.assertEqual(result["device_count"], 1)
-            self.assertEqual(result["reachable_count"], 0)
-            self.assertEqual(result["unreachable_count"], 1)
-            self.assertEqual(result["unknown_reachability_count"], 0)
-            self.assertFalse(result["devices"][0]["reachable"])
-
-    def test_summary_status_counts_unknown_reachability(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service = ManagerService(root=Path(tmp), config=SINGLE_DEVICE_CONFIG)
-
-            result = service.summary_status()
-
-            self.assertEqual(result["device_count"], 1)
-            self.assertEqual(result["reachable_count"], 0)
-            self.assertEqual(result["unreachable_count"], 0)
-            self.assertEqual(result["unknown_reachability_count"], 1)
-            self.assertIsNone(result["devices"][0]["reachable"])
-
-    def test_poll_once_records_reachable_device_even_without_image(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            service = ManagerService(
-                root=Path(tmp),
-                config=SINGLE_DEVICE_CONFIG,
-                preview_writer=Mock(),
-                reachability_checker=Mock(return_value=True),
-            )
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"], {"status": "skipped", "reason": "no_image"})
-            self.assertTrue(service.state()["devices"]["canvas-1"]["reachable"])
-
-    def test_poll_once_records_unreachable_device_without_previewing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            config = {
-                "reload_after_seconds": 0,
-                "devices": [
-                    {
-                        "name": "canvas-1",
-                        "display_name": "Canvas 1",
-                        "cloud_id": None,
-                        "local_ip": "192.0.2.10",
-                        "orientation": "landscape",
-                        "enabled": True,
-                    }
-                ],
-            }
-            service = ManagerService(
-                root=Path(tmp),
-                config=config,
-                preview_writer=Mock(),
-                reachability_checker=Mock(return_value=False),
-            )
-            service.images_dir.mkdir(exist_ok=True)
-            target = service.images_dir / "canvas-1.png"
-            target.write_bytes(image.read_bytes())
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"]["reason"], "unreachable")
-            self.assertFalse(service.state()["devices"]["canvas-1"]["reachable"])
-
-    def test_poll_once_reload_after_zero_reloads_even_after_recent_success(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            config = {
-                "reload_after_seconds": 0,
-                "devices": [
-                    {
-                        "name": "canvas-1",
-                        "display_name": "Canvas 1",
-                        "cloud_id": None,
-                        "local_ip": "192.0.2.10",
-                        "orientation": "landscape",
-                        "enabled": True,
-                    }
-                ],
-            }
-            preview_writer = Mock(return_value={"status": "pass"})
-            service = ManagerService(
-                root=Path(tmp),
-                config=config,
-                preview_writer=preview_writer,
-                reachability_checker=Mock(return_value=True),
-            )
-            service.images_dir.mkdir(exist_ok=True)
-            target = service.images_dir / "canvas-1.png"
-            target.write_bytes(image.read_bytes())
-            service.save_state({"devices": {"canvas-1": {"last_success_at": "2999-01-01T00:00:00+00:00"}}})
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"]["status"], "loaded")
-            preview_writer.assert_called_once()
-
-    def test_poll_once_repairs_stale_blank_gallery_item_before_preview(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            config = {
-                "reload_after_seconds": 0,
-                "blank_galleries": {
-                    "landscape": {"id": "gallery-1"},
-                },
-                "devices": [
-                    {
-                        "name": "canvas-1",
-                        "display_name": "Canvas 1",
-                        "cloud_id": None,
-                        "local_ip": "192.0.2.10",
-                        "orientation": "landscape",
-                        "enabled": True,
-                    }
-                ],
-            }
-            frame = Mock()
-            frame.current_gallery.return_value = {
-                "current_gallery": "gallery-1",
-                "current_item": "stale-item",
-                "current_gallery_name": "Blank Hold",
-            }
-            frame.gallery_items.return_value = [
-                {"id": "blank-item", "title": "blank-black-landscape-1920x1080"},
-            ]
-            frame.change_item.return_value = {"status": "pass", "response": ""}
-            frame.postcard.return_value = {"status": "pass"}
-            service = ManagerService(
-                root=Path(tmp),
-                config=config,
-                reachability_checker=Mock(return_value=True),
-                local_client_factory=Mock(return_value=frame),
-            )
-            service.images_dir.mkdir(exist_ok=True)
-            (service.images_dir / "canvas-1.png").write_bytes(image.read_bytes())
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"]["status"], "loaded")
-            frame.change_item.assert_called_once_with("blank-item")
-            frame.postcard.assert_called_once()
-            self.assertEqual(service.state()["devices"]["canvas-1"]["gallery"]["current_item"], "blank-item")
-
-    def test_poll_once_sleeps_scheduled_device_and_skips_preview_during_window(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            config = {
-                "sleep_schedules": [
-                    {
-                        "enabled": True,
-                        "timezone": "Australia/Sydney",
-                        "sleep_start": "19:30",
-                        "wake_time": "07:00",
-                        "devices": ["canvas-1"],
-                    }
-                ],
-                "devices": [
-                    {
-                        "name": "canvas-1",
-                        "display_name": "Canvas 1",
-                        "cloud_id": None,
-                        "local_ip": "192.0.2.10",
-                        "orientation": "landscape",
-                        "enabled": True,
-                    }
-                ],
-            }
-            preview_writer = Mock()
-            sleep_writer = Mock(return_value={"status": "pass"})
-            service = ManagerService(
-                root=Path(tmp),
-                config=config,
-                preview_writer=preview_writer,
-                reachability_checker=Mock(return_value=True),
-                sleep_writer=sleep_writer,
-                now_provider=lambda: datetime(2026, 6, 25, 10, 0, tzinfo=timezone.utc),
-            )
-            service.images_dir.mkdir(exist_ok=True)
-            (service.images_dir / "canvas-1.png").write_bytes(image.read_bytes())
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"]["status"], "sleeping")
-            sleep_writer.assert_called_once()
-            preview_writer.assert_not_called()
-
-    def test_poll_once_wakes_scheduled_device_and_previews_after_window(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            config = {
-                "sleep_schedules": [
-                    {
-                        "enabled": True,
-                        "timezone": "Australia/Sydney",
-                        "sleep_start": "19:30",
-                        "wake_time": "07:00",
-                        "devices": ["canvas-1"],
-                    }
-                ],
-                "reload_after_seconds": 0,
-                "devices": [
-                    {
-                        "name": "canvas-1",
-                        "display_name": "Canvas 1",
-                        "cloud_id": None,
-                        "local_ip": "192.0.2.10",
-                        "orientation": "landscape",
-                        "enabled": True,
-                    }
-                ],
-            }
-            preview_writer = Mock(return_value={"status": "pass"})
-            wake_writer = Mock(return_value={"status": "pass"})
-            service = ManagerService(
-                root=Path(tmp),
-                config=config,
-                preview_writer=preview_writer,
-                reachability_checker=Mock(return_value=True),
-                wake_writer=wake_writer,
-                now_provider=lambda: datetime(2026, 6, 24, 22, 0, tzinfo=timezone.utc),
-            )
-            service.images_dir.mkdir(exist_ok=True)
-            (service.images_dir / "canvas-1.png").write_bytes(image.read_bytes())
-            service.save_state({"devices": {"canvas-1": {"last_sleep_action": "sleep"}}})
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"]["status"], "loaded")
-            wake_writer.assert_called_once()
-            preview_writer.assert_called_once()
-
-    def test_poll_once_does_not_wake_scheduled_device_repeatedly_after_window(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            config = {
-                "sleep_schedules": [
-                    {
-                        "enabled": True,
-                        "timezone": "Australia/Sydney",
-                        "sleep_start": "19:30",
-                        "wake_time": "07:00",
-                        "devices": ["canvas-1"],
-                    }
-                ],
-                "reload_after_seconds": 0,
-                "devices": [
-                    {
-                        "name": "canvas-1",
-                        "display_name": "Canvas 1",
-                        "cloud_id": None,
-                        "local_ip": "192.0.2.10",
-                        "orientation": "landscape",
-                        "enabled": True,
-                    }
-                ],
-            }
-            preview_writer = Mock(return_value={"status": "pass"})
-            wake_writer = Mock(return_value={"status": "pass"})
-            service = ManagerService(
-                root=Path(tmp),
-                config=config,
-                preview_writer=preview_writer,
-                reachability_checker=Mock(return_value=True),
-                wake_writer=wake_writer,
-                now_provider=lambda: datetime(2026, 6, 24, 22, 0, tzinfo=timezone.utc),
-            )
-            service.images_dir.mkdir(exist_ok=True)
-            (service.images_dir / "canvas-1.png").write_bytes(image.read_bytes())
-            service.save_state({"devices": {"canvas-1": {"last_sleep_action": "wake"}}})
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"]["status"], "loaded")
-            wake_writer.assert_not_called()
-            preview_writer.assert_called_once()
-
-    def test_poll_once_honors_one_time_sleep_until_override(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            image = Path(tmp) / "landscape.png"
-            write_png(image, 1200, 800)
-            config = {
-                "sleep_schedules": [
-                    {
-                        "enabled": True,
-                        "timezone": "Australia/Sydney",
-                        "sleep_start": "19:30",
-                        "wake_time": "07:00",
-                        "devices": ["canvas-1"],
-                    }
-                ],
-                "reload_after_seconds": 0,
-                "devices": [
-                    {
-                        "name": "canvas-1",
-                        "display_name": "Canvas 1",
-                        "cloud_id": None,
-                        "local_ip": "192.0.2.10",
-                        "orientation": "landscape",
-                        "enabled": True,
-                    }
-                ],
-            }
-            preview_writer = Mock(return_value={"status": "pass"})
-            sleep_writer = Mock(return_value={"status": "pass"})
-            service = ManagerService(
-                root=Path(tmp),
-                config=config,
-                preview_writer=preview_writer,
-                reachability_checker=Mock(return_value=True),
-                sleep_writer=sleep_writer,
-                now_provider=lambda: datetime(2026, 6, 25, 6, 30, tzinfo=timezone.utc),
-            )
-            service.images_dir.mkdir(exist_ok=True)
-            (service.images_dir / "canvas-1.png").write_bytes(image.read_bytes())
-            service.save_state(
-                {
-                    "devices": {
-                        "canvas-1": {
-                            "sleep_until": "2026-06-25T21:00:00+00:00",
-                            "last_sleep_action": "sleep",
-                        }
-                    }
-                }
-            )
-
-            result = service.poll_once()
-
-            self.assertEqual(result["canvas-1"]["status"], "sleeping")
-            sleep_writer.assert_called_once()
-            preview_writer.assert_not_called()
-
-
-class InitTests(unittest.TestCase):
-    def test_cloud_timeout_init_updates_and_syncs_configured_devices(self):
-        cloud = Mock()
-        config = {
-            "timeouts": {"imageDuration": 86400, "previewDuration": 86400, "overlayDuration": 120},
-            "devices": [
-                {"name": "canvas-1", "cloud_id": 1001, "enabled": True},
-                {"name": "disabled-canvas", "cloud_id": 1002, "enabled": False},
-                {"name": "unpaired", "cloud_id": None, "enabled": True},
-            ],
-        }
-
-        result = initialise_cloud_timeouts(cloud, config, include_disabled=True)
-
-        self.assertEqual(result["updated"], ["canvas-1", "disabled-canvas"])
-        cloud.update_device.assert_any_call(1001, config["timeouts"])
-        cloud.sync_device.assert_any_call(1002)
-
-    def test_blank_gallery_init_creates_orientation_specific_galleries(self):
-        cloud = Mock()
-        cloud.list_galleries.return_value = {"data": []}
-        cloud.create_gallery.side_effect = [
-            {"data": {"id": 2001, "name": "MeuralMCP Blank Hold Landscape"}},
-            {"data": {"id": 2002, "name": "MeuralMCP Blank Hold Portrait"}},
-        ]
-        cloud.list_gallery_items.return_value = {"data": []}
-        cloud.upload_item_to_gallery.side_effect = [{"data": {"id": 3001}}, {"data": {"id": 3002}}]
-        cloud.list_device_galleries.return_value = {"data": []}
-        config = {
-            "blank_galleries": {
-                "landscape": {
-                    "name": "MeuralMCP Blank Hold Landscape",
-                    "description": "test landscape",
-                },
-                "portrait": {
-                    "name": "MeuralMCP Blank Hold Portrait",
-                    "description": "test portrait",
-                },
-            },
-            "devices": [
-                {"name": "canvas-1", "cloud_id": 1001, "orientation": "landscape", "enabled": True},
-                {"name": "canvas-2", "cloud_id": 1002, "orientation": "portrait", "enabled": True},
-            ],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            result = ensure_blank_gallery_assigned(cloud, config, Path(tmp))
-
-        self.assertEqual(result["galleries"]["landscape"]["gallery_id"], 2001)
-        self.assertEqual(result["galleries"]["portrait"]["gallery_id"], 2002)
-        self.assertEqual(result["galleries"]["landscape"]["assigned"], ["canvas-1"])
-        self.assertEqual(result["galleries"]["portrait"]["assigned"], ["canvas-2"])
-        cloud.set_device_gallery.assert_any_call(1001, 2001)
-        cloud.set_device_gallery.assert_any_call(1002, 2002)
-
-    def test_blank_gallery_init_normalises_horizontal_vertical_orientations(self):
-        cloud = Mock()
-        cloud.list_galleries.return_value = {"data": []}
-        cloud.create_gallery.side_effect = [
-            {"data": {"id": 2001, "name": "MeuralMCP Blank Hold Landscape"}},
-            {"data": {"id": 2002, "name": "MeuralMCP Blank Hold Portrait"}},
-        ]
-        cloud.list_gallery_items.return_value = {"data": []}
-        cloud.upload_item_to_gallery.side_effect = [{"data": {"id": 3001}}, {"data": {"id": 3002}}]
-        cloud.list_device_galleries.return_value = {"data": []}
-        config = {
-            "devices": [
-                {"name": "wide", "cloud_id": 1001, "orientation": "horizontal", "enabled": True},
-                {"name": "tall", "cloud_id": 1002, "orientation": "vertical", "enabled": True},
-            ],
-        }
-
-        with tempfile.TemporaryDirectory() as tmp:
-            result = ensure_blank_gallery_assigned(cloud, config, Path(tmp))
-
-        self.assertEqual(config["devices"][0]["orientation"], "landscape")
-        self.assertEqual(config["devices"][1]["orientation"], "portrait")
-        self.assertEqual(result["galleries"]["landscape"]["assigned"], ["wide"])
-        self.assertEqual(result["galleries"]["portrait"]["assigned"], ["tall"])
+def image_dimensions_bytes(data: bytes):
+    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+        tmp.write(data)
+        tmp.flush()
+        return image_dimensions(Path(tmp.name))
 
 
 if __name__ == "__main__":

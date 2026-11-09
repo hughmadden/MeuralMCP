@@ -1,40 +1,34 @@
+"""Device registry, image store, and gallery publishing into the local API.
+
+A frame trusts this host for api.meural.com, so "showing an image" means
+publishing a one-item gallery into the service's data directory and queueing a
+`get_galleries` command for that frame. Nothing here talks to Netgear.
+"""
+
+from __future__ import annotations
+
+import hashlib
 import json
 import os
-import shutil
 import struct
-import tempfile
 import time
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
-from .cloud import MeuralCloudClient
 from .local import FrameLocalClient
 
-
-DEFAULT_TIMEOUTS = {
-    "imageDuration": 86400,
-    "previewDuration": 86400,
-    "overlayDuration": 120,
+GALLERY_BASE = 900000
+DEFAULT_SERVICE = {
+    "root": "/var/lib/meural-api",
+    "cert": "/etc/meural-api/chain.pem",
+    "key": "/etc/meural-api/key.pem",
+    "bind": "0.0.0.0",
+    "port": 443,
 }
 
-DEFAULT_BLANK_GALLERIES = {
-    "landscape": {
-        "name": "MeuralMCP Blank Hold Landscape",
-        "description": "Single blank landscape image managed by meural-mcp.",
-        "orientation": "landscape",
-        "width": 1920,
-        "height": 1080,
-    },
-    "portrait": {
-        "name": "MeuralMCP Blank Hold Portrait",
-        "description": "Single blank portrait image managed by meural-mcp.",
-        "orientation": "portrait",
-        "width": 1080,
-        "height": 1920,
-    },
-}
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -52,9 +46,7 @@ def default_config() -> dict[str, Any]:
     return {
         "poll_seconds": 60,
         "reload_after_seconds": 0,
-        "timeouts": dict(DEFAULT_TIMEOUTS),
-        "blank_galleries": json.loads(json.dumps(DEFAULT_BLANK_GALLERIES)),
-        "sleep_schedules": [],
+        "service": dict(DEFAULT_SERVICE),
         "devices": [],
     }
 
@@ -70,7 +62,8 @@ def load_config(root: Optional[Path] = None) -> dict[str, Any]:
     loaded = json.loads(path.read_text())
     config = default_config()
     config.update({key: value for key, value in loaded.items() if key != "devices"})
-    devices = {}
+    config["service"] = {**DEFAULT_SERVICE, **(loaded.get("service") or {})}
+    devices: dict[str, dict] = {}
     for device in loaded.get("devices", []):
         name = canonical_name(device["name"])
         merged = devices.get(name, {"name": name})
@@ -91,7 +84,10 @@ def load_state(root: Path) -> dict[str, Any]:
     path = root / "state.json"
     if not path.exists():
         return {"devices": {}}
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text())
+    except ValueError:
+        return {"devices": {}}
 
 
 def save_state(root: Path, state: dict[str, Any]) -> None:
@@ -117,42 +113,41 @@ def image_dimensions(path: Path) -> tuple[int, int]:
         return struct.unpack(">II", data[16:24])
     if data.startswith(b"\xff\xd8"):
         i = 2
-        while i < len(data):
-            while i < len(data) and data[i] == 0xFF:
+        while i < len(data) - 9:
+            if data[i] != 0xFF:
                 i += 1
-            if i >= len(data):
-                break
-            marker = data[i]
-            i += 1
-            if marker in {0xD8, 0xD9}:
                 continue
-            if i + 2 > len(data):
-                break
-            segment_length = struct.unpack(">H", data[i : i + 2])[0]
-            if marker in range(0xC0, 0xD0) and marker not in {0xC4, 0xC8, 0xCC}:
-                if i + 7 > len(data):
-                    break
-                height, width = struct.unpack(">HH", data[i + 3 : i + 7])
+            marker = data[i + 1]
+            if marker in (0xC0, 0xC1, 0xC2, 0xC3):
+                height, width = struct.unpack(">HH", data[i + 5:i + 9])
                 return width, height
-            i += segment_length
+            if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+        raise ValueError("invalid JPEG")
     raise ValueError("unsupported image format")
 
 
 def orientation_for_dimensions(width: int, height: int) -> str:
-    if width == height:
-        return "square"
-    return "landscape" if width > height else "portrait"
+    return "portrait" if height > width else "landscape"
 
 
 def normalise_orientation(value: Optional[str]) -> str:
-    orientation = (value or "landscape").strip().lower()
-    aliases = {
-        "horizontal": "landscape",
-        "landscape": "landscape",
-        "vertical": "portrait",
-        "portrait": "portrait",
-    }
-    return aliases.get(orientation, "landscape")
+    aliases = {"horizontal": "landscape", "landscape": "landscape", "vertical": "portrait", "portrait": "portrait"}
+    return aliases.get((value or "").strip().lower(), "landscape")
+
+
+def _md5(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _thumbnail(source: Path, target: Path, orientation: str) -> None:
+    from PIL import Image  # imported lazily so the rest works without Pillow
+
+    size = (270, 480) if orientation == "portrait" else (480, 270)
+    with Image.open(source) as img:
+        img.convert("RGB").resize(size).save(target, "JPEG", quality=85)
 
 
 class ManagerService:
@@ -160,29 +155,43 @@ class ManagerService:
         self,
         root: Optional[Path] = None,
         config: Optional[dict[str, Any]] = None,
-        cloud_client: Optional[MeuralCloudClient] = None,
-        preview_writer: Optional[Callable[[dict, Path], dict]] = None,
-        reachability_checker: Optional[Callable[[dict], bool]] = None,
-        sleep_writer: Optional[Callable[[dict], dict]] = None,
-        wake_writer: Optional[Callable[[dict], dict]] = None,
-        now_provider: Optional[Callable[[], datetime]] = None,
         local_client_factory: Optional[Callable[[str, int], FrameLocalClient]] = None,
+        thumbnailer: Optional[Callable[[Path, Path, str], None]] = None,
+        now_provider: Optional[Callable[[], datetime]] = None,
     ):
         self.root = root or storage_dir()
         self.config = config or load_config(self.root)
-        self.cloud_client = cloud_client
-        self.preview_writer = preview_writer or self._write_preview_to_frame
-        self.reachability_checker = reachability_checker or self._check_reachability
-        self.sleep_writer = sleep_writer or self._sleep_frame
-        self.wake_writer = wake_writer or self._wake_frame
-        self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self.local_client_factory = local_client_factory or (lambda ip, timeout=5: FrameLocalClient(ip, timeout=timeout))
+        self.thumbnailer = thumbnailer or _thumbnail
+        self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self.images_dir.mkdir(parents=True, exist_ok=True)
 
+    # ---- paths -----------------------------------------------------------
     @property
     def images_dir(self) -> Path:
         return self.root / "images"
 
+    @property
+    def service(self) -> dict[str, Any]:
+        return self.config.get("service") or dict(DEFAULT_SERVICE)
+
+    @property
+    def service_root(self) -> Path:
+        return Path(self.service["root"])
+
+    @property
+    def media_dir(self) -> Path:
+        return self.service_root / "media"
+
+    @property
+    def by_id_dir(self) -> Path:
+        return self.service_root / "by-id"
+
+    @property
+    def queues_dir(self) -> Path:
+        return self.service_root / "queues"
+
+    # ---- devices ---------------------------------------------------------
     def devices(self) -> list[dict]:
         return self.config.get("devices", [])
 
@@ -202,483 +211,330 @@ class ManagerService:
                 return path
         return None
 
+    def gallery_id(self, name: str) -> int:
+        return GALLERY_BASE + zlib.crc32(canonical_name(name).encode()) % 90000
+
+    def product_key(self, device: dict) -> Optional[str]:
+        if device.get("product_key"):
+            return device["product_key"]
+        ip = device.get("local_ip")
+        if not ip:
+            return None
+        try:
+            ident = self.local_client_factory(ip, 3).identify()
+        except Exception:
+            return None
+        key = ident.get("product_key")
+        if key:
+            device["product_key"] = key
+            save_config(self.config, self.root)
+        return key
+
     def state(self) -> dict[str, Any]:
         return load_state(self.root)
 
     def save_state(self, state: dict[str, Any]) -> None:
         save_state(self.root, state)
 
-    def device_status(self, name: str) -> dict[str, Any]:
+    def service_reachable(self) -> bool:
+        host = "127.0.0.1" if self.service.get("bind") in ("0.0.0.0", "::") else self.service.get("bind")
+        port = int(self.service.get("port", 443))
+        import socket
+
+        try:
+            with socket.create_connection((host, port), timeout=3):
+                return True
+        except OSError:
+            return False
+
+    # ---- publishing ------------------------------------------------------
+    def publish(self, name: str) -> dict[str, Any]:
+        """Write the device's stored image into the service as a one-item gallery."""
         device = self.device(name)
-        image = self.image_path(device["name"])
-        state = self.state().get("devices", {}).get(device["name"], {})
-        status = {
-            "name": device["name"],
-            "display_name": device.get("display_name"),
-            "cloud_id": device.get("cloud_id"),
-            "enabled": bool(device.get("enabled")),
-            "orientation": device.get("orientation", "landscape"),
-            "local_ip": device.get("local_ip"),
-            "reachable": state.get("reachable"),
-            "last_reachability_check_at": state.get("last_reachability_check_at"),
-            "image": str(image) if image else None,
-            "state": state,
+        image = self.image_path(name)
+        if image is None:
+            return {"status": "skipped", "reason": "no_image"}
+        orientation = normalise_orientation(device.get("orientation"))
+        gid = self.gallery_id(device["name"])
+        stem = device["name"]
+
+        self.media_dir.mkdir(parents=True, exist_ok=True)
+        self.by_id_dir.mkdir(parents=True, exist_ok=True)
+
+        ext = image.suffix.lower() if image.suffix.lower() in (".jpg", ".jpeg", ".png") else ".jpg"
+        full = self.media_dir / f"{stem}{ext}"
+        thumb = self.media_dir / f"{stem}_t.jpg"
+        full.write_bytes(image.read_bytes())
+        self.thumbnailer(full, thumb, orientation)
+
+        host = self.service.get("host") or "api.meural.com"
+        item = {
+            "id": gid + 1,
+            "title": device.get("display_name") or device["name"],
+            "is_detailed": False,
+            "description": "",
+            "medium": "",
+            "dimensions": "",
+            "location": "",
+            "year": "",
+            "author": "",
+            "creator_id": 1,
+            "partner_name": "",
+            "brightness": 0,
+            "gamma": 0.0,
+            "priority": 0,
+            "fill": 0,
+            "type": "image",
+            "link": False,
+            "copyright": "",
+            "orientation": orientation,
+            "url": f"https://{host}/media/{full.name}",
+            "thumb_url": f"https://{host}/media/{thumb.name}",
+            "permalink": None,
+            "bg_type": None,
+            "bg_color": None,
+            "placement_orientation": None,
+            "placement_coord_x": None,
+            "placement_coord_y": None,
+            "scale": None,
+            "overlay_name_font": None,
+            "overlay_caption_font": None,
+            "is_authenticated": False,
+            "thumb_checksum": _md5(thumb),
+            "thumb_size": thumb.stat().st_size,
+            "checksum": _md5(full),
+            "size": full.stat().st_size,
         }
-        if self.cloud_client and device.get("cloud_id"):
-            try:
-                data = self.cloud_client.get_device(int(device["cloud_id"])).get("data", {})
-                status["cloud"] = {
-                    "status": data.get("status"),
-                    "localIp": data.get("localIp"),
-                    "orientation": data.get("orientation"),
-                    "imageDuration": data.get("imageDuration"),
-                    "previewDuration": data.get("previewDuration"),
-                    "overlayDuration": data.get("overlayDuration"),
-                    "frameStatus": data.get("frameStatus"),
-                }
-            except Exception as exc:
-                status["cloud_error"] = str(exc)
-        return status
-
-    def summary_status(self) -> dict[str, Any]:
-        devices = [self.device_status(device["name"]) for device in self.devices()]
-        reachable = [device for device in devices if device.get("reachable") is True]
-        unreachable = [device for device in devices if device.get("reachable") is False]
-        unknown = [device for device in devices if device.get("reachable") is None]
-        enabled = [device for device in devices if device.get("enabled")]
-        return {
-            "device_count": len(devices),
-            "enabled_count": len(enabled),
-            "reachable_count": len(reachable),
-            "unreachable_count": len(unreachable),
-            "unknown_reachability_count": len(unknown),
-            "devices": devices,
+        gallery = {
+            "is_ok": True,
+            "id": gid,
+            "name": f"MeuralMCP {device['name']}",
+            "description": "Managed by meural-mcp.",
+            "curator": "meural-mcp",
+            "type": "images",
+            "priority": 0,
+            "timeout": 0,
+            "orientation": 0 if orientation == "portrait" else 1,
+            "items": [item],
+            "cover_url": item["thumb_url"],
+            "cover_checksum": item["thumb_checksum"],
+            "cover_size": item["thumb_size"],
         }
+        (self.by_id_dir / f"{gid}.json").write_text(json.dumps(gallery))
+        queued = self.enqueue(device, {
+            "type": "command",
+            "command": "get_galleries",
+            "parameter": gid,
+            "body": {"id": gid, "include_items": True, "bg_download": False},
+        })
+        return {"status": "pass", "gallery_id": gid, "queued": queued}
 
-    def assign_image(self, name: str, source_path: Path) -> dict[str, Any]:
+    def enqueue(self, device: dict, command: dict) -> bool:
+        key = self.product_key(device)
+        if not key:
+            return False
+        self.queues_dir.mkdir(parents=True, exist_ok=True)
+        path = self.queues_dir / f"{key}.json"
+        try:
+            items = json.loads(path.read_text()) if path.exists() else []
+        except ValueError:
+            items = []
+        items.append(command)
+        path.write_text(json.dumps(items))
+        return True
+
+    # ---- image writes ----------------------------------------------------
+    def set_image(self, name: str, data: bytes, filename: Optional[str] = None) -> dict[str, Any]:
         device = self.device(name)
-        try:
-            width, height = image_dimensions(source_path)
-        except Exception as exc:
-            self._record_failure(device["name"], "image_invalid", str(exc))
-            return {"status": "failed", "reason": "image_invalid", "error": str(exc)}
-        actual_orientation = orientation_for_dimensions(width, height)
-        expected_orientation = normalise_orientation(device.get("orientation"))
-        if actual_orientation != expected_orientation:
-            self._record_failure(device["name"], "orientation_mismatch")
-            return {
-                "status": "failed",
-                "reason": "orientation_mismatch",
-                "expected_orientation": expected_orientation,
-                "actual_orientation": actual_orientation,
-                "width": width,
-                "height": height,
-            }
-        suffix = source_path.suffix.lower()
-        if suffix not in {".jpg", ".jpeg", ".png"}:
-            suffix = ".jpg"
-        with tempfile.NamedTemporaryFile(dir=self.images_dir, suffix=suffix, delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-        try:
-            shutil.copyfile(source_path, tmp_path)
-            preview_result = self.preview_writer(device, tmp_path)
-            final_path = self.images_dir / f"{device['name']}{suffix}"
-            tmp_path.replace(final_path)
-            self._record_success(device["name"], final_path, preview_result)
-            return {"status": "loaded", "device": device["name"], "image": str(final_path), "preview": preview_result}
-        except Exception as exc:
-            tmp_path.unlink(missing_ok=True)
-            self._record_failure(device["name"], "preview_failed", str(exc))
-            return {"status": "failed", "reason": "preview_failed", "error": str(exc)}
+        if not device.get("enabled", True):
+            return {"status": "failed", "reason": "disabled"}
 
-    def preview_stored_image(self, name: str) -> dict[str, Any]:
-        device = self.device(name)
-        image = self.image_path(device["name"])
-        if not image:
-            return {"status": "failed", "reason": "no_image"}
-        try:
-            result = self.preview_writer(device, image)
-            self._record_success(device["name"], image, result)
-            return {"status": "loaded", "device": device["name"], "image": str(image), "preview": result}
-        except Exception as exc:
-            self._record_failure(device["name"], "preview_failed", str(exc))
-            return {"status": "failed", "reason": "preview_failed", "error": str(exc)}
+        suffix = Path(filename or "upload.jpg").suffix.lower()
+        suffix = suffix if suffix in (".jpg", ".jpeg", ".png") else ".jpg"
+        temp = self.images_dir / f".upload-{device['name']}{suffix}"
+        temp.write_bytes(data)
 
-    def poll_once(self) -> dict[str, Any]:
-        results = {}
-        reload_after = int(self.config.get("reload_after_seconds", 23 * 60 * 60))
+        try:
+            width, height = image_dimensions(temp)
+        except ValueError:
+            temp.unlink(missing_ok=True)
+            return {"status": "failed", "reason": "unreadable_image"}
+
+        found = orientation_for_dimensions(width, height)
+        expected = normalise_orientation(device.get("orientation"))
+        if found != expected:
+            temp.unlink(missing_ok=True)
+            return {"status": "failed", "reason": "orientation_mismatch", "expected": expected, "found": found, "width": width, "height": height}
+
+        for ext in (".jpg", ".jpeg", ".png"):
+            (self.images_dir / f"{device['name']}{ext}").unlink(missing_ok=True)
+        target = self.images_dir / f"{device['name']}{suffix}"
+        temp.replace(target)
+
+        published = self.publish(device["name"])
         state = self.state()
-        for device in self.devices():
-            name = device["name"]
-            if not device.get("enabled", True):
-                results[name] = {"status": "skipped", "reason": "disabled"}
-                continue
-            if not self._device_reachable(device):
-                results[name] = {"status": "skipped", "reason": "unreachable"}
-                continue
-            sleep_schedule = self._sleep_schedule_for(device)
-            device_state = state.get("devices", {}).get(name, {})
-            if sleep_schedule and (self._sleep_until_active(device_state) or self._in_sleep_window(sleep_schedule)):
-                results[name] = self.sleep_device(name)
-                continue
-            if sleep_schedule and device_state.get("last_sleep_action") == "sleep":
-                self.wake_device(name)
-            image = self.image_path(name)
-            if not image:
-                results[name] = {"status": "skipped", "reason": "no_image"}
-                continue
-            last_success = state.get("devices", {}).get(name, {}).get("last_success_at")
-            if reload_after > 0 and last_success and not older_than(last_success, reload_after):
-                results[name] = {"status": "skipped", "reason": "fresh"}
-                continue
-            results[name] = self.preview_stored_image(name)
-        return results
+        state.setdefault("devices", {}).setdefault(device["name"], {}).update(
+            {"last_image_at": now_iso(), "last_error": None, "image": str(target)}
+        )
+        self.save_state(state)
+        return {"status": published["status"], "image": str(target), "gallery_id": published.get("gallery_id")}
 
-    def run_daemon(self) -> None:
-        poll_seconds = int(self.config.get("poll_seconds", 60))
-        while True:
-            try:
-                self.poll_once()
-            except Exception:
-                pass
-            time.sleep(poll_seconds)
-
-    def _write_preview_to_frame(self, device: dict, image_path: Path) -> dict:
-        client = self._local_client(device, timeout=5)
-        self._assert_blank_gallery_item(device, client)
-        return client.postcard(image_path)
-
-    def sleep_device(self, name: str) -> dict[str, Any]:
+    def clear_image(self, name: str) -> dict[str, Any]:
         device = self.device(name)
-        try:
-            result = self.sleep_writer(device)
-            self._record_sleep_action(device["name"], "sleep", result)
-            return {"status": "sleeping", "device": device["name"], "sleep": result}
-        except Exception as exc:
-            self._record_failure(device["name"], "sleep_failed", str(exc))
-            return {"status": "failed", "reason": "sleep_failed", "error": str(exc)}
+        image = self.image_path(device["name"])
+        if image is None:
+            return {"status": "skipped", "reason": "no_image"}
+        image.unlink()
+        return {"status": "pass"}
 
-    def wake_device(self, name: str) -> dict[str, Any]:
-        device = self.device(name)
-        try:
-            result = self.wake_writer(device)
-            self._record_sleep_action(device["name"], "wake", result)
-            return {"status": "awake", "device": device["name"], "wake": result}
-        except Exception as exc:
-            self._record_failure(device["name"], "wake_failed", str(exc))
-            return {"status": "failed", "reason": "wake_failed", "error": str(exc)}
-
-    def _sleep_frame(self, device: dict) -> dict:
-        return self._local_client(device, timeout=5).sleep()
-
-    def _wake_frame(self, device: dict) -> dict:
-        return self._local_client(device, timeout=5).wake()
-
-    def _local_client(self, device: dict, timeout: int = 5) -> FrameLocalClient:
+    # ---- device actions --------------------------------------------------
+    def _client(self, device: dict, timeout: int = 5) -> FrameLocalClient:
         ip = device.get("local_ip")
-        if not ip and self.cloud_client and device.get("cloud_id"):
-            data = self.cloud_client.get_device(int(device["cloud_id"])).get("data", {})
-            ip = data.get("localIp") or (data.get("frameStatus") or {}).get("localIp")
         if not ip:
             raise TimeoutError("no local IP for device")
         return self.local_client_factory(ip, timeout)
 
-    def _assert_blank_gallery_item(self, device: dict, client: FrameLocalClient) -> None:
-        expected_gallery = self.config.get("blank_galleries", {}).get(normalise_orientation(device.get("orientation")), {})
-        expected_gallery_id = expected_gallery.get("id")
-        if not expected_gallery_id:
-            return
-        gallery = client.current_gallery()
-        if str(gallery.get("current_gallery")) != str(expected_gallery_id):
-            client.change_gallery(expected_gallery_id)
-            gallery = client.current_gallery()
-        items = client.gallery_items(expected_gallery_id)
-        if len(items) != 1:
-            self._record_gallery_state(device["name"], gallery, {"status": "skipped", "reason": "unexpected_item_count", "count": len(items)})
-            return
-        item_id = str(items[0].get("id"))
-        if item_id and str(gallery.get("current_item")) != item_id:
-            client.change_item(item_id)
-            gallery = dict(gallery)
-            gallery["current_item"] = item_id
-        self._record_gallery_state(device["name"], gallery, {"status": "pass", "item_id": item_id})
+    def sleep(self, name: str) -> dict[str, Any]:
+        device = self.device(name)
+        self._client(device).sleep()
+        return {"status": "pass"}
 
-    def _sleep_schedule_for(self, device: dict) -> Optional[dict[str, Any]]:
-        aliases = {canonical_name(device["name"]), canonical_name(device.get("display_name", ""))}
-        for schedule in self.config.get("sleep_schedules", []):
-            if not schedule.get("enabled", True):
-                continue
-            devices = {canonical_name(name) for name in schedule.get("devices", [])}
-            if aliases & devices:
-                return schedule
-        return None
+    def wake(self, name: str) -> dict[str, Any]:
+        device = self.device(name)
+        self._client(device).wake()
+        return {"status": "pass"}
 
-    def _in_sleep_window(self, schedule: dict[str, Any]) -> bool:
-        zone = ZoneInfo(schedule.get("timezone", "UTC"))
-        now = self.now_provider()
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        local_now = now.astimezone(zone).time()
-        start = parse_hhmm(schedule.get("sleep_start", "19:30"))
-        end = parse_hhmm(schedule.get("wake_time", "07:00"))
-        if start == end:
-            return True
-        if start < end:
-            return start <= local_now < end
-        return local_now >= start or local_now < end
-
-    def _sleep_until_active(self, device_state: dict[str, Any]) -> bool:
-        sleep_until = device_state.get("sleep_until")
-        if not sleep_until:
-            return False
-        try:
-            until = datetime.fromisoformat(sleep_until)
-        except Exception:
-            return False
-        if until.tzinfo is None:
-            until = until.replace(tzinfo=timezone.utc)
-        now = self.now_provider()
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        return now < until
-
-    def _check_reachability(self, device: dict) -> bool:
-        ip = device.get("local_ip")
-        if not ip:
-            return False
-        try:
-            FrameLocalClient(ip, timeout=3).identify()
-            return True
-        except Exception:
-            return False
-
-    def _device_reachable(self, device: dict) -> bool:
-        name = device["name"]
-        try:
-            reachable = bool(self.reachability_checker(device))
-        except Exception as exc:
-            self._record_reachability(name, False, str(exc))
-            return False
-        self._record_reachability(name, reachable, None if reachable else "unreachable")
-        return reachable
-
-    def _record_success(self, name: str, image: Path, preview_result: dict) -> None:
-        state = self.state()
-        current = state.setdefault("devices", {}).setdefault(name, {})
-        current.update({
-            "last_success_at": now_iso(),
-            "last_error": None,
-            "image": str(image),
-            "preview": preview_result,
-        })
-        self.save_state(state)
-
-    def _record_failure(self, name: str, reason: str, error: Optional[str] = None) -> None:
-        state = self.state()
-        current = state.setdefault("devices", {}).setdefault(name, {})
-        current.update({"last_failure_at": now_iso(), "last_error": {"reason": reason, "error": error}})
-        self.save_state(state)
-
-    def _record_sleep_action(self, name: str, action: str, result: dict) -> None:
-        state = self.state()
-        current = state.setdefault("devices", {}).setdefault(name, {})
-        current.update(
-            {
-                "last_sleep_action_at": now_iso(),
-                "last_sleep_action": action,
-                "sleep": result,
-                "last_error": None,
-            }
-        )
-        if action == "wake":
-            current.pop("sleep_until", None)
-        self.save_state(state)
-
-    def _record_reachability(self, name: str, reachable: bool, error: Optional[str] = None) -> None:
-        state = self.state()
-        current = state.setdefault("devices", {}).setdefault(name, {})
-        current.update(
-            {
-                "reachable": reachable,
-                "last_reachability_check_at": now_iso(),
-            }
-        )
-        if not reachable:
-            current["last_error"] = {"reason": "unreachable", "error": error}
-        self.save_state(state)
-
-    def _record_gallery_state(self, name: str, gallery: dict, result: dict) -> None:
-        state = self.state()
-        current = state.setdefault("devices", {}).setdefault(name, {})
-        current.update({"gallery": gallery, "gallery_check": result, "last_gallery_check_at": now_iso()})
-        self.save_state(state)
-
-
-def older_than(timestamp: str, seconds: int) -> bool:
-    try:
-        dt = datetime.fromisoformat(timestamp)
-    except Exception:
-        return True
-    return (datetime.now(timezone.utc) - dt).total_seconds() >= seconds
-
-
-def parse_hhmm(value: str):
-    return datetime.strptime(value, "%H:%M").time()
-
-
-def refresh_device_ids_from_cloud(cloud_client: MeuralCloudClient, config: dict[str, Any]) -> dict:
-    response = cloud_client.list_devices()
-    devices = response.get("data", [])
-    by_alias = {canonical_name(device.get("alias", "")): device for device in devices if device.get("alias")}
-    refreshed = []
-    for configured in config.get("devices", []):
-        cloud_device = by_alias.get(canonical_name(configured.get("display_name", configured["name"])))
-        if not cloud_device:
-            continue
-        configured["cloud_id"] = cloud_device.get("id")
-        configured["local_ip"] = cloud_device.get("localIp")
-        refreshed.append(configured["name"])
-    return {"refreshed": refreshed}
-
-
-def initialise_cloud_timeouts(
-    cloud_client: MeuralCloudClient,
-    config: dict[str, Any],
-    include_disabled: bool = True,
-    progress: Optional[Callable[[str], None]] = None,
-) -> dict:
-    timeouts = config.get("timeouts", DEFAULT_TIMEOUTS)
-    updated, failed = [], []
-    for device in config.get("devices", []):
-        if not include_disabled and not device.get("enabled", True):
-            continue
-        cloud_id = device.get("cloud_id")
-        if not cloud_id:
-            continue
-        try:
-            if progress:
-                progress(f"setting timeouts and syncing {device['name']}")
-            cloud_client.update_device(int(cloud_id), dict(timeouts))
-            cloud_client.sync_device(int(cloud_id))
-            updated.append(device["name"])
-        except Exception as exc:
-            failed.append({"device": device.get("name"), "error": str(exc)})
-    return {"updated": updated, "failed": failed}
-
-
-def ensure_blank_gallery_assigned(
-    cloud_client: MeuralCloudClient,
-    config: dict[str, Any],
-    root: Path,
-    progress: Optional[Callable[[str], None]] = None,
-) -> dict:
-    blank_galleries = _normalise_blank_gallery_config(config)
-    devices_by_orientation: dict[str, list[dict]] = {}
-    for device in config.get("devices", []):
-        cloud_id = device.get("cloud_id")
-        if not cloud_id:
-            continue
-        orientation = normalise_orientation(device.get("orientation"))
-        device["orientation"] = orientation
-        devices_by_orientation.setdefault(orientation, []).append(device)
-
-    results = {}
-    for orientation, devices in devices_by_orientation.items():
-        gallery_config = blank_galleries[orientation]
-        if progress:
-            progress(f"preparing {orientation} blank gallery for {len(devices)} device(s)")
-        gallery = find_gallery_by_name(cloud_client, gallery_config["name"])
-        created = False
-        if not gallery:
-            if progress:
-                progress(f"creating {orientation} blank gallery")
-            gallery = cloud_client.create_gallery(
-                gallery_config["name"],
-                gallery_config.get("description", ""),
-                orientation,
-            ).get("data", {})
-            created = True
-        gallery_id = int(gallery["id"])
-        gallery_config["id"] = gallery_id
-
-        blank_image = root / f"blank-black-{orientation}-{gallery_config['width']}x{gallery_config['height']}.png"
-        if not blank_image.exists():
-            if progress:
-                progress(f"creating local {orientation} blank image")
-            write_blank_png(blank_image, gallery_config["width"], gallery_config["height"])
-
-        uploaded_item_id = None
-        if not cloud_client.list_gallery_items(gallery_id).get("data", []):
-            if progress:
-                progress(f"uploading {orientation} blank image")
-            uploaded = cloud_client.upload_item_to_gallery(gallery_id, blank_image).get("data", {})
-            uploaded_item_id = uploaded.get("id")
-
-        assigned, already_assigned, failed = [], [], []
-        for device in devices:
-            cloud_id = device.get("cloud_id")
-            if not cloud_id:
-                continue
+    def device_status(self, name: str) -> dict[str, Any]:
+        device = self.device(name)
+        image = self.image_path(device["name"])
+        state = self.state().get("devices", {}).get(device["name"], {})
+        status: dict[str, Any] = {
+            "name": device["name"],
+            "display_name": device.get("display_name"),
+            "enabled": bool(device.get("enabled", True)),
+            "orientation": normalise_orientation(device.get("orientation")),
+            "local_ip": device.get("local_ip"),
+            "product_key": device.get("product_key"),
+            "image": str(image) if image else None,
+            "gallery_id": self.gallery_id(device["name"]),
+            "reachable": None,
+            "last_reachability_check_at": state.get("last_reachability_check_at"),
+            "state": state,
+        }
+        if device.get("local_ip"):
             try:
-                galleries = cloud_client.list_device_galleries(int(cloud_id)).get("data", [])
-                has_gallery = any(int(g.get("id")) == gallery_id for g in galleries if g.get("id") is not None)
-                if has_gallery:
-                    already_assigned.append(device["name"])
-                    continue
-                if progress:
-                    progress(f"assigning {device['name']} to {orientation} blank gallery")
-                cloud_client.set_device_gallery(int(cloud_id), gallery_id)
-                assigned.append(device["name"])
+                ident = self._client(device, 3).identify()
+                status["reachable"] = True
+                status["frame"] = {
+                    "alias": ident.get("alias"),
+                    "version": ident.get("version"),
+                    "orientation": ident.get("orientation"),
+                    "name": ident.get("name"),
+                }
+                status["current_gallery"] = self._client(device, 3).current_gallery()
             except Exception as exc:
-                failed.append({"device": device.get("name"), "error": str(exc)})
-        results[orientation] = {
-            "gallery_id": gallery_id,
-            "created": created,
-            "uploaded_item_id": uploaded_item_id,
-            "assigned": assigned,
-            "already_assigned": already_assigned,
-            "failed": failed,
+                status["reachable"] = False
+                status["error"] = str(exc)
+            state = self.state().setdefault("devices", {}).setdefault(device["name"], {})
+            state["reachable"] = status["reachable"]
+            state["last_reachability_check_at"] = now_iso()
+            self.save_state(self.state() | {})
+        return status
+
+    def assign_image(self, name: str, path: Path) -> dict[str, Any]:
+        return self.set_image(name, Path(path).read_bytes(), Path(path).name)
+
+    def summary_status(self) -> dict[str, Any]:
+        return self.summary()
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "service": {"reachable": self.service_reachable(), **self.service},
+            "devices_total": len(self.devices()),
+            "devices_enabled": sum(1 for d in self.devices() if d.get("enabled", True)),
         }
 
-    config["blank_galleries"] = blank_galleries
-    config.pop("blank_gallery", None)
-    return {"galleries": results}
+    def run_daemon(self, poll_seconds: Optional[int] = None) -> None:
+        """Apply sleep schedules; re-publish every N polls if configured."""
+        interval = poll_seconds or int(self.config.get("poll_seconds", 60))
+        reload_after = int(self.config.get("reload_after_seconds", 0) or 0)
+        ticks = 0
+        while True:
+            try:
+                self.apply_sleep_schedules()
+                if reload_after and ticks % max(1, reload_after // interval) == 0:
+                    for device in self.devices():
+                        if device.get("enabled", True) and self.image_path(device["name"]):
+                            self.publish(device["name"])
+            except Exception as exc:  # keep the loop alive
+                state = self.state()
+                state["last_daemon_error"] = f"{now_iso()} {exc}"
+                self.save_state(state)
+            ticks += interval
+            time.sleep(interval)
 
+    # ---- sleep schedules -------------------------------------------------
+    @staticmethod
+    def _valid_hhmm(value: str) -> bool:
+        try:
+            hour, minute = value.split(":")
+            return 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59
+        except (ValueError, AttributeError):
+            return False
 
-def _normalise_blank_gallery_config(config: dict[str, Any]) -> dict[str, dict]:
-    blank_galleries = json.loads(json.dumps(DEFAULT_BLANK_GALLERIES))
-    if "blank_galleries" in config:
-        for orientation, value in config["blank_galleries"].items():
-            if orientation in blank_galleries and isinstance(value, dict):
-                blank_galleries[orientation].update(value)
-    elif "blank_gallery" in config:
-        legacy = config["blank_gallery"]
-        if isinstance(legacy, dict):
-            blank_galleries["landscape"].update(legacy)
-            blank_galleries["landscape"].setdefault("width", 1920)
-            blank_galleries["landscape"].setdefault("height", 1080)
-    return blank_galleries
+    def get_schedule(self, name: str) -> dict[str, Any]:
+        device = self.device(name)
+        return device.get("schedule") or {"enabled": False, "timezone": "Etc/UTC",
+                                          "sleep_start": "19:30", "wake_time": "07:00"}
 
+    def set_schedule(self, name: str, sleep_start: str, wake_time: str,
+                     timezone: str = "Etc/UTC", enabled: bool = True) -> dict[str, Any]:
+        device = self.device(name)
+        if not self._valid_hhmm(sleep_start) or not self._valid_hhmm(wake_time):
+            return {"status": "failed", "reason": "invalid_time", "expected": "HH:MM"}
+        if sleep_start == wake_time:
+            return {"status": "failed", "reason": "identical_times"}
+        try:
+            ZoneInfo(timezone)
+        except Exception:
+            return {"status": "failed", "reason": "unknown_timezone", "timezone": timezone}
+        device["schedule"] = {"enabled": bool(enabled), "timezone": timezone,
+                              "sleep_start": sleep_start, "wake_time": wake_time}
+        save_config(self.config, self.root)
+        return {"status": "pass", "schedule": device["schedule"]}
 
-def find_gallery_by_name(cloud_client: MeuralCloudClient, name: str) -> Optional[dict]:
-    for gallery in cloud_client.list_galleries().get("data", []):
-        if gallery.get("name") == name:
-            return gallery
-    return None
+    def clear_schedule(self, name: str) -> dict[str, Any]:
+        device = self.device(name)
+        device.pop("schedule", None)
+        save_config(self.config, self.root)
+        return {"status": "pass"}
 
+    def _sleep_schedule_for(self, device: dict) -> Optional[dict[str, Any]]:
+        schedule = device.get("schedule")
+        if schedule and schedule.get("enabled", True):
+            return schedule
+        return None
 
-def write_blank_png(path: Path, width: int = 1920, height: int = 1080) -> None:
-    import zlib
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = b"".join(b"\x00" + b"\x00\x00\x00" * width for _ in range(height))
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        crc = zlib.crc32(kind + data) & 0xFFFFFFFF
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", crc)
-
-    png = b"\x89PNG\r\n\x1a\n"
-    png += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-    png += chunk(b"IDAT", zlib.compress(raw, 9))
-    png += chunk(b"IEND", b"")
-    path.write_bytes(png)
+    def apply_sleep_schedules(self) -> list[dict[str, Any]]:
+        """Suspend/resume frames at schedule edges. Returns what changed."""
+        changed = []
+        state = self.state()
+        for device in self.devices():
+            schedule = self._sleep_schedule_for(device)
+            if not schedule:
+                continue
+            zone = ZoneInfo(schedule.get("timezone", "UTC"))
+            local = self.now_provider().astimezone(zone).strftime("%H:%M")
+            start, end = schedule.get("sleep_start", "19:30"), schedule.get("wake_time", "07:00")
+            in_window = start <= local < end if start < end else (local >= start or local < end)
+            entry = state.setdefault("devices", {}).setdefault(device["name"], {})
+            if in_window == entry.get("asleep"):
+                continue
+            try:
+                self.sleep(device["name"]) if in_window else self.wake(device["name"])
+                entry["asleep"] = in_window
+                changed.append({"device": device["name"], "asleep": in_window})
+            except Exception as exc:
+                entry["sleep_error"] = str(exc)
+        self.save_state(state)
+        return changed

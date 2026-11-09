@@ -1,40 +1,38 @@
 # Sleep Schedules
 
-MeuralMCP supports optional per-device sleep windows. A schedule is evaluated by
-the daemon on every poll.
+Optional per-device windows in which a frame is suspended. Set them over MCP or
+in config; the daemon applies them at the edges.
 
-Example:
+```
+set_device_schedule(name, sleep_start, wake_time, timezone, enabled)
+```
+
+`sleep_start` and `wake_time` are `HH:MM` in an IANA timezone. A window that
+crosses midnight sets `sleep_start` later than `wake_time`.
 
 ```json
-{
-  "sleep_schedules": [
-    {
-      "name": "bedtime",
-      "enabled": true,
-      "timezone": "Australia/Sydney",
-      "sleep_start": "19:30",
-      "wake_time": "07:00",
-      "devices": ["canvas-1", "canvas-2"]
-    }
-  ]
+{"name": "canvas-1", "sleep_start": "22:30", "wake_time": "07:00",
+ "timezone": "Etc/UTC", "enabled": true}
+```
+
+Config equivalent, on the device entry:
+
+```json
+"schedule": {
+  "enabled": true,
+  "timezone": "Etc/UTC",
+  "sleep_start": "22:30",
+  "wake_time": "07:00"
 }
 ```
 
-Behavior:
+Behaviour:
 
-- During the sleep window, matching reachable devices receive
-  `/remote/control_command/suspend`.
-- During the sleep window, the daemon does not write postcard previews or reload
-  images for those devices.
-- Outside the sleep window, matching reachable devices receive
-  `/remote/control_command/resume` before normal image reload behavior, but only
-  if the daemon previously recorded a sleep action for that device.
-- Windows may cross midnight. For example, `19:30` to `07:00` means sleep from
-  7:30 PM until 7:00 AM in the configured timezone.
-- Schedule device names match either `name` or `display_name`, normalized the
-  same way as MCP/API device lookup.
-
-For one-off manual holds, device state may include `sleep_until` as an ISO-8601
-timestamp. While `sleep_until` is in the future, the daemon keeps that scheduled
-device asleep and skips image writes even if the recurring sleep window is not
-currently active. The value is cleared when the daemon wakes the device.
+- Evaluated by `meural-mcp daemon` only. Without the daemon a schedule does
+  nothing.
+- The daemon suspends at the start of the window and wakes at the end, once per
+  edge; restarts do not re-apply an unchanged state.
+- `get_device_schedule` returns the current window, `clear_device_schedule`
+  removes it.
+- Times are validated: equal start and end, malformed times and unknown timezones
+  are rejected with a reason.

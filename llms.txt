@@ -1,55 +1,34 @@
 # MeuralMCP
 
-> MeuralMCP is a Python daemon, REST API, and hosted MCP service for locally
-> managing Netgear Meural Canvas preview images. It polls frames because
-> previews can be lost after sleep or boot, stores one assigned image per
-> device, validates image orientation, and exposes MCP tools for coding agents.
+Local control of Netgear Meural Canvas frames: CLI, REST API and MCP server.
+The frames are served by a local HTTPS API; no Netgear account is involved at
+runtime.
 
-This repository is intended to be public and generic. Do not add real device
-names, IP addresses, cloud IDs, serial numbers, MAC addresses, API tokens,
-passwords, cookies, private images, or generated runtime state.
+This file is a map for agents. The method surface is docs/agents.md — an agent
+using the MCP tools does not need the operator material.
 
-## Primary Documentation
+## Entry points
 
-- [README.md](README.md): user setup, cloud init, service samples, HTTPS reverse proxy guidance, FAQ, and credits.
-- [AGENTS.md](AGENTS.md): contributor and coding-agent safety rules for keeping the repo public-safe.
-- [examples/config.example.json](examples/config.example.json): generic configuration shape.
-- [docs/sleep-schedules.md](docs/sleep-schedules.md): optional per-device sleep window behavior.
+- docs/agents.md — MCP tools and REST routes, request/result shapes. Start here.
+- README.md — what the project is, quick start.
+- docs/deploy.md — operator work: certificate for api.meural.com, DNS, firewall.
+- docs/sleep-schedules.md — per-device sleep windows.
 
-## Runtime Surfaces
+## Concepts
 
-- [src/meural_mcp/cli.py](src/meural_mcp/cli.py): command-line entrypoint for init, daemon, REST API, and MCP server.
-- [src/meural_mcp/manager.py](src/meural_mcp/manager.py): core device config, image assignment, preview reload, reachability, blank gallery, and timeout logic.
-- [src/meural_mcp/mcp_server.py](src/meural_mcp/mcp_server.py): MCP tools for listing devices, reading status, reading assigned image paths, and setting current images.
-- [src/meural_mcp/api.py](src/meural_mcp/api.py): token-protected REST API and hosted remote MCP endpoint at `/mcp/`.
-- [src/meural_mcp/cloud.py](src/meural_mcp/cloud.py): Meural cloud authentication and setup calls.
-- [src/meural_mcp/local.py](src/meural_mcp/local.py): local frame `/remote` calls.
+- Devices are configured by name (canvas-1) with an IP and an orientation.
+- Images must match orientation: landscape 16:9, portrait 9:16.
+- Images are stored server-side; a frame keeps showing one after reboot.
 
-## Deployment Examples
+## MCP tools
 
-- [examples/systemd/meural-mcp-daemon.service](examples/systemd/meural-mcp-daemon.service): system daemon sample.
-- [examples/systemd/meural-mcp-api.service](examples/systemd/meural-mcp-api.service): localhost REST API service sample.
-- [examples/systemd/meural-mcp-user.service](examples/systemd/meural-mcp-user.service): user-level daemon sample.
-- [examples/reverse-proxy/Caddyfile](examples/reverse-proxy/Caddyfile): Caddy HTTPS reverse proxy sample.
-- [examples/reverse-proxy/nginx.conf](examples/reverse-proxy/nginx.conf): nginx HTTPS reverse proxy sample.
+list_devices, get_device_status, get_device_image, set_device_image_data,
+clear_device_image, publish_device, sleep_device, wake_device,
+get_device_schedule, set_device_schedule, clear_device_schedule.
 
-## MCP Client Model
+## Result shape
 
-Preferred: run the daemon/API on the service host and expose remote MCP at
-`/mcp/` over HTTPS. Clients that support remote MCP should connect to that URL
-with the shared bearer token and should not need this package installed locally.
-
-For hosted remote MCP, use `set_device_image_data` to upload image bytes as
-base64. `set_device_image` takes a path on the machine running the MCP server,
-so it is mainly for stdio adapters or server-local files.
-
-Fallback: run `meural-mcp mcp --transport stdio` locally only for clients that
-cannot speak remote MCP. The stdio adapter may point at a remote REST API with
-`MEURAL_MCP_API_URL`.
-
-## Tests
-
-- [tests/test_manager.py](tests/test_manager.py): manager behavior, image validation, cloud setup, and reachability.
-- [tests/test_mcp_server.py](tests/test_mcp_server.py): MCP tool behavior and image-write error contracts.
-- [tests/test_cli.py](tests/test_cli.py): CLI init and systemd helper behavior.
-- [tests/test_api.py](tests/test_api.py): REST API token authentication.
+{"status": "pass", ...} on success; {"status": "failed", "reason": ...} otherwise.
+Reasons: device_not_found, image_not_found, image_base64_invalid,
+unreadable_image, orientation_mismatch, disabled, invalid_time,
+identical_times, unknown_timezone.

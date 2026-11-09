@@ -147,17 +147,66 @@ def register_routes(api_app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="device not found")
         finally:
             tmp_path.unlink(missing_ok=True)
-        status = 200 if result.get("status") == "loaded" else 422
-        return Response(json.dumps(result), status_code=status, media_type="application/json")
+        return Response(json.dumps(result), status_code=200 if result.get("status") == "pass" else 422,
+                        media_type="application/json")
 
-    @api_app.post("/devices/{name}/preview", dependencies=[Depends(authenticated)])
-    def retry_preview(name: str):
+    @api_app.delete("/devices/{name}/image", dependencies=[Depends(authenticated)])
+    def delete_device_image(name: str):
         try:
-            result = service().preview_stored_image(name)
+            return service().clear_image(name)
         except KeyError:
             raise HTTPException(status_code=404, detail="device not found")
-        status = 200 if result.get("status") == "loaded" else 422
-        return Response(json.dumps(result), status_code=status, media_type="application/json")
+
+    @api_app.post("/devices/{name}/publish", dependencies=[Depends(authenticated)])
+    def publish_device(name: str):
+        """Re-publish the stored image and queue the gallery for this frame."""
+        try:
+            return service().publish(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="device not found")
+
+    @api_app.get("/devices/{name}/schedule", dependencies=[Depends(authenticated)])
+    def get_device_schedule(name: str):
+        try:
+            return service().get_schedule(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="device not found")
+
+    @api_app.put("/devices/{name}/schedule", dependencies=[Depends(authenticated)])
+    def put_device_schedule(name: str, payload: dict):
+        try:
+            result = service().set_schedule(
+                name,
+                payload.get("sleep_start", "19:30"),
+                payload.get("wake_time", "07:00"),
+                payload.get("timezone", "Etc/UTC"),
+                bool(payload.get("enabled", True)),
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="device not found")
+        return Response(json.dumps(result), status_code=200 if result.get("status") == "pass" else 422,
+                        media_type="application/json")
+
+    @api_app.delete("/devices/{name}/schedule", dependencies=[Depends(authenticated)])
+    def delete_device_schedule(name: str):
+        try:
+            return service().clear_schedule(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="device not found")
+
+    @api_app.post("/devices/{name}/sleep", dependencies=[Depends(authenticated)])
+    def sleep_device(name: str):
+        try:
+            return service().sleep(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="device not found")
+
+    @api_app.post("/devices/{name}/wake", dependencies=[Depends(authenticated)])
+    def wake_device(name: str):
+        try:
+            return service().wake(name)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="device not found")
 
 
 app = create_app()

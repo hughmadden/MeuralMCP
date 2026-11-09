@@ -1,22 +1,14 @@
 [Unit]
-Description=MeuralMCP localhost REST API and remote MCP endpoint
-Wants=network-online.target
-After=network-online.target meural-mcp-daemon.service
+Description=MeuralMCP REST API
+After=network-online.target
 
 [Service]
-Type=simple
 User=meural-mcp
 Group=meural-mcp
 Environment=MEURAL_MCP_STORAGE_DIR=/var/lib/meural-mcp
-# Comma-separated reverse-proxy hostnames allowed by remote MCP DNS-rebinding protection.
-# Environment=MEURAL_MCP_ALLOWED_HOSTS=meural-mcp.example.test,meural-mcp.example.test:443
-ExecStart=/opt/meural-mcp/.venv/bin/meural-mcp --storage-dir /var/lib/meural-mcp serve --host 127.0.0.1 --port 8733
+ExecStart=/opt/meural-mcp/.venv/bin/meural-mcp serve --host 127.0.0.1 --port 8733
 Restart=always
-RestartSec=15
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/var/lib/meural-mcp
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

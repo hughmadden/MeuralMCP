@@ -1,53 +1,27 @@
 {
   "poll_seconds": 60,
   "reload_after_seconds": 0,
-  "timeouts": {
-    "imageDuration": 86400,
-    "previewDuration": 86400,
-    "overlayDuration": 120
+  "service": {
+    "root": "/var/lib/meural-api",
+    "cert": "/etc/meural-api/chain.pem",
+    "key": "/etc/meural-api/key.pem",
+    "bind": "0.0.0.0",
+    "port": 443
   },
-  "blank_galleries": {
-    "landscape": {
-      "name": "MeuralMCP Blank Hold Landscape",
-      "description": "Single blank landscape image managed by meural-mcp.",
-      "orientation": "landscape",
-      "width": 1920,
-      "height": 1080
-    },
-    "portrait": {
-      "name": "MeuralMCP Blank Hold Portrait",
-      "description": "Single blank portrait image managed by meural-mcp.",
-      "orientation": "portrait",
-      "width": 1080,
-      "height": 1920
-    }
-  },
-  "sleep_schedules": [
-    {
-      "name": "bedtime",
-      "enabled": false,
-      "timezone": "Australia/Sydney",
-      "sleep_start": "19:30",
-      "wake_time": "07:00",
-      "devices": ["canvas-1"]
-    }
-  ],
   "devices": [
     {
       "name": "canvas-1",
       "display_name": "Canvas 1",
-      "cloud_id": null,
-      "local_ip": null,
+      "local_ip": "192.0.2.10",
+      "product_key": null,
       "orientation": "landscape",
-      "enabled": true
-    },
-    {
-      "name": "canvas-2",
-      "display_name": "Canvas 2",
-      "cloud_id": null,
-      "local_ip": null,
-      "orientation": "landscape",
-      "enabled": true
+      "enabled": true,
+      "schedule": {
+        "enabled": false,
+        "timezone": "Etc/UTC",
+        "sleep_start": "19:30",
+        "wake_time": "07:00"
+      }
     }
   ]
 }

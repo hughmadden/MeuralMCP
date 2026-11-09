@@ -1,0 +1,15 @@
+[Unit]
+Description=Meural local API (frames trust this host for api.meural.com)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/meural-api/meural_api.py
+Environment=MEURAL_CONF=/etc/meural-api/meural.conf
+Restart=always
+RestartSec=3
+User=meural-api
+Group=meural-api
+
+[Install]
+WantedBy=multi-user.target

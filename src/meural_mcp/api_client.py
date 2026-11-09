@@ -45,9 +45,29 @@ class RemoteApiClient:
     def device_status(self, name: str) -> dict[str, Any]:
         return self.request("GET", f"/devices/{name}", timeout=15)
 
-    def set_device_image(self, name: str, image_path: Path) -> dict[str, Any]:
-        content_type = "image/png" if image_path.suffix.lower() == ".png" else "image/jpeg"
-        return self.set_device_image_bytes(name, image_path.read_bytes(), suffix=image_path.suffix, content_type=content_type)
+    def get_device_schedule(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/schedule", timeout=15)
+
+    def set_device_schedule(self, name: str, sleep_start: str, wake_time: str,
+                            timezone: str = "Etc/UTC", enabled: bool = True) -> dict[str, Any]:
+        return self.request("PUT", f"/devices/{name}/schedule", timeout=15, json={
+            "sleep_start": sleep_start, "wake_time": wake_time,
+            "timezone": timezone, "enabled": enabled})
+
+    def clear_device_schedule(self, name: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/devices/{name}/schedule", timeout=15)
+
+    def clear_device_image(self, name: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/devices/{name}/image", timeout=30)
+
+    def publish_device(self, name: str) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/publish", timeout=30)
+
+    def sleep_device(self, name: str) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/sleep", timeout=30)
+
+    def wake_device(self, name: str) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/wake", timeout=30)
 
     def set_device_image_bytes(
         self,

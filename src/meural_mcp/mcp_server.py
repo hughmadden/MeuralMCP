@@ -30,7 +30,7 @@ def _service(
     preview_writer: Optional[Callable[[dict, Path], dict]] = None,
 ) -> ManagerService:
     root = Path(storage_dir).expanduser() if storage_dir else None
-    return ManagerService(root=root, config=config, preview_writer=preview_writer)
+    return ManagerService(root=root, config=config)
 
 
 def mcp_list_devices(
@@ -82,28 +82,6 @@ def mcp_get_device_image(
     return {"status": "ok", "device": name, "image": str(image) if image else None, "exists": bool(image)}
 
 
-def mcp_set_device_image(
-    name: str,
-    image_path: str,
-    storage_dir: str | Path | None = None,
-    config: Optional[dict[str, Any]] = None,
-    preview_writer: Optional[Callable[[dict, Path], dict]] = None,
-    api_url: Optional[str] = None,
-    api_token: Optional[str] = None,
-    verify_tls: Optional[bool] = None,
-) -> dict[str, Any]:
-    path = Path(image_path).expanduser()
-    if not path.exists():
-        return {"status": "failed", "reason": "image_not_found", "error": str(path)}
-    remote = _remote_client(api_url, api_token, verify_tls)
-    if remote:
-        return remote.set_device_image(name, path)
-    try:
-        return _service(storage_dir=storage_dir, config=config, preview_writer=preview_writer).assign_image(name, path)
-    except KeyError as exc:
-        return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
-
-
 def mcp_set_device_image_data(
     name: str,
     image_base64: str,
@@ -132,11 +110,76 @@ def mcp_set_device_image_data(
         tmp.write(image_bytes)
         tmp_path = Path(tmp.name)
     try:
-        return _service(storage_dir=storage_dir, config=config, preview_writer=preview_writer).assign_image(name, tmp_path)
+        return _service(storage_dir=storage_dir, config=config).assign_image(name, tmp_path)
     except KeyError as exc:
         return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _device_action(action: str, name: str, storage_dir=None, config=None,
+                   api_url=None, api_token=None, verify_tls=None) -> dict[str, Any]:
+    remote = _remote_client(api_url, api_token, verify_tls)
+    if remote:
+        return getattr(remote, f"{action}_device")(name)
+    try:
+        service = _service(storage_dir=storage_dir, config=config)
+    except Exception as exc:
+        return {"status": "failed", "error": str(exc)}
+    try:
+        if action == "sleep":
+            return service.sleep(name)
+        if action == "wake":
+            return service.wake(name)
+        if action == "clear_image":
+            return service.clear_image(name)
+        if action == "get_schedule":
+            return service.get_schedule(name)
+        if action == "clear_schedule":
+            return service.clear_schedule(name)
+        if action == "publish":
+            return service.publish(name)
+    except KeyError as exc:
+        return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
+    return {"status": "failed", "reason": f"unknown_action_{action}"}
+
+
+def mcp_get_device_schedule(name: str, **kw) -> dict[str, Any]:
+    return _device_action("get_schedule", name, **kw)
+
+
+def mcp_set_device_schedule(name: str, sleep_start: str, wake_time: str,
+                            timezone: str = "Etc/UTC", enabled: bool = True,
+                            storage_dir=None, config=None, api_url=None,
+                            api_token=None, verify_tls=None) -> dict[str, Any]:
+    remote = _remote_client(api_url, api_token, verify_tls)
+    if remote:
+        return remote.set_device_schedule(name, sleep_start, wake_time, timezone, enabled)
+    try:
+        return _service(storage_dir=storage_dir, config=config).set_schedule(
+            name, sleep_start, wake_time, timezone, enabled)
+    except KeyError as exc:
+        return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
+
+
+def mcp_clear_device_schedule(name: str, **kw) -> dict[str, Any]:
+    return _device_action("clear_schedule", name, **kw)
+
+
+def mcp_clear_device_image(name: str, **kw) -> dict[str, Any]:
+    return _device_action("clear_image", name, **kw)
+
+
+def mcp_publish_device(name: str, **kw) -> dict[str, Any]:
+    return _device_action("publish", name, **kw)
+
+
+def mcp_sleep_device(name: str, **kw) -> dict[str, Any]:
+    return _device_action("sleep", name, **kw)
+
+
+def mcp_wake_device(name: str, **kw) -> dict[str, Any]:
+    return _device_action("wake", name, **kw)
 
 
 def build_mcp_server(
@@ -162,7 +205,7 @@ def build_mcp_server(
 
     @server.tool()
     def get_device_status(name: str) -> dict[str, Any]:
-        """Get one device's inventory and status, including display name, cloud ID, LAN IP, orientation, reachability, state, and assigned image."""
+        """Get one device's inventory and status, including display name, product key, LAN IP, orientation, reachability, state, and assigned image."""
         return mcp_get_device_status(name)
 
     @server.tool()
@@ -171,14 +214,45 @@ def build_mcp_server(
         return mcp_get_device_image(name)
 
     @server.tool()
-    def set_device_image(name: str, image_path: str) -> dict[str, Any]:
-        """Store an image from a server-local path and load it as the current preview."""
-        return mcp_set_device_image(name, image_path)
+    def set_device_image_data(name: str, image_base64: str, filename: str = "image.png") -> dict[str, Any]:
+        """Store a base64-encoded image and publish it to that frame as a one-item gallery."""
+        return mcp_set_device_image_data(name, image_base64, filename)
 
     @server.tool()
-    def set_device_image_data(name: str, image_base64: str, filename: str = "image.png") -> dict[str, Any]:
-        """Store a base64-encoded image uploaded by the MCP client and load it as the current preview."""
-        return mcp_set_device_image_data(name, image_base64, filename)
+    def clear_device_image(name: str) -> dict[str, Any]:
+        """Remove the stored image for a device."""
+        return mcp_clear_device_image(name)
+
+    @server.tool()
+    def publish_device(name: str) -> dict[str, Any]:
+        """Re-publish the stored image and queue it for the frame (use after it drifts)."""
+        return mcp_publish_device(name)
+
+    @server.tool()
+    def get_device_schedule(name: str) -> dict[str, Any]:
+        """Get the device's sleep schedule."""
+        return mcp_get_device_schedule(name)
+
+    @server.tool()
+    def set_device_schedule(name: str, sleep_start: str, wake_time: str,
+                            timezone: str = "Etc/UTC", enabled: bool = True) -> dict[str, Any]:
+        """Set a daily sleep window (HH:MM times) and the timezone it applies in."""
+        return mcp_set_device_schedule(name, sleep_start, wake_time, timezone, enabled)
+
+    @server.tool()
+    def clear_device_schedule(name: str) -> dict[str, Any]:
+        """Remove the device's sleep schedule."""
+        return mcp_clear_device_schedule(name)
+
+    @server.tool()
+    def sleep_device(name: str) -> dict[str, Any]:
+        """Suspend the frame."""
+        return mcp_sleep_device(name)
+
+    @server.tool()
+    def wake_device(name: str) -> dict[str, Any]:
+        """Wake the frame."""
+        return mcp_wake_device(name)
 
     return server
 

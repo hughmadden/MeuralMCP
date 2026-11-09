@@ -14,9 +14,15 @@ install -d -o meural-api -g meural-api /var/log/meural-api
 
 install -m 644 "$HERE/meural_api.py" /opt/meural-api/meural_api.py
 install -m 644 "$HERE/meural-api.service" /etc/systemd/system/meural-api.service
-[ -f /etc/meural-api/meural.conf ] || install -m 640 "$HERE/meural.conf.example" /etc/meural-api/meural.conf
+[ -f /etc/meural-api/meural.conf ] || \
+  install -m 640 -g meural-api "$HERE/meural.conf.example" /etc/meural-api/meural.conf
 install -m 755 "$HERE/pin-clock.sh" /opt/meural-api/pin-clock.sh 2>/dev/null || true
 
+# The service runs as meural-api, so both must be group-readable.
+for f in /etc/meural-api/chain.pem /etc/meural-api/key.pem /etc/meural-api/meural.conf; do
+    [ -f "$f" ] && chown root:meural-api "$f" && chmod 640 "$f"
+done
+
 echo "Place the certificate chain at /etc/meural-api/chain.pem (leaf first)"
-echo "and its key at /etc/meural-api/key.pem, mode 600, then:"
+echo "and its key at /etc/meural-api/key.pem, owned root:meural-api mode 640, then:"
 echo "  systemctl daemon-reload && systemctl enable --now meural-api"

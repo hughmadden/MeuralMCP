@@ -22,8 +22,9 @@ a certificate for **`api.meural.com`** that the frames already trust:
 
 - **Subject/SAN:** `api.meural.com`
 - **Format:** PEM chain — leaf first, then any intermediates. Key unencrypted PEM.
-- **Place:** `/etc/meural-api/chain.pem` and `/etc/meural-api/key.pem`, mode 600,
-  owned by root.
+- **Place:** `/etc/meural-api/chain.pem` and `/etc/meural-api/key.pem`, owned
+  `root:meural-api`, mode 640. The service runs as `meural-api` and must read
+  both; `600 root:root` leaves it unable to start.
 
 The frames do not check revocation, so a chain from an internal or lab CA works
 provided the root is already in the frames' store. A chain that also covers

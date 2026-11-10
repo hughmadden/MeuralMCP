@@ -1,0 +1,34 @@
+# MeuralMCP
+
+Local control of Netgear Meural Canvas frames: CLI, REST API and MCP server.
+The frames are served by a local HTTPS API; no Netgear account is involved at
+runtime.
+
+This file is a map for agents. The method surface is docs/agents.md — an agent
+using the MCP tools does not need the operator material.
+
+## Entry points
+
+- docs/agents.md — MCP tools and REST routes, request/result shapes. Start here.
+- README.md — what the project is, quick start.
+- docs/deploy.md — operator work: certificate for api.meural.com, DNS, firewall.
+- docs/sleep-schedules.md — per-device sleep windows.
+
+## Concepts
+
+- Devices are configured by name (canvas-1) with an IP and an orientation.
+- Images must match orientation: landscape 16:9, portrait 9:16.
+- Images are stored server-side; a frame keeps showing one after reboot.
+
+## MCP tools
+
+list_devices, get_device_status, get_device_image, set_device_image_data,
+clear_device_image, publish_device, sleep_device, wake_device,
+get_device_schedule, set_device_schedule, clear_device_schedule.
+
+## Result shape
+
+{"status": "pass", ...} on success; {"status": "failed", "reason": ...} otherwise.
+Reasons: device_not_found, image_not_found, image_base64_invalid,
+unreadable_image, orientation_mismatch, disabled, invalid_time,
+identical_times, unknown_timezone.

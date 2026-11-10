@@ -51,6 +51,16 @@ class ApiTests(unittest.TestCase):
     def test_healthz_open(self):
         self.assertEqual(self.client.get("/healthz").status_code, 200)
 
+    def test_agent_docs_served_without_token(self):
+        self.assertEqual(self.client.get("/llms.txt").status_code, 200)
+        self.assertIn("MCP tools", self.client.get("/llms.txt").text)
+        self.assertEqual(self.client.get("/agents.md").status_code, 200)
+
+    def test_openapi_declares_bearer_auth(self):
+        schema = self.client.get("/openapi.json").json()
+        self.assertIn("HTTPBearer", schema["components"]["securitySchemes"])
+        self.assertTrue(schema["paths"]["/devices"]["get"]["security"])
+
     def test_requires_token(self):
         self.assertEqual(self.client.get("/status").status_code, 401)
 

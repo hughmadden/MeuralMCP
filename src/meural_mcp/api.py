@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .manager import ManagerService, auth_token_valid, load_config
 from .mcp_server import build_mcp_server
@@ -50,6 +51,13 @@ class BearerTokenASGIMiddleware:
         await send({"type": "http.response.body", "body": payload})
 
 
+def _data_file(name: str) -> PlainTextResponse:
+    """Serve a packaged agent doc, so the service documents itself."""
+    path = Path(__file__).parent / "data" / name
+    text = path.read_text() if path.exists() else "not packaged"
+    return PlainTextResponse(text)
+
+
 def require_api_token(
     expected_token: Optional[str],
     authorization: Optional[str] = None,
@@ -59,9 +67,13 @@ def require_api_token(
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
+bearer_scheme = HTTPBearer(auto_error=False, description="Bearer token from config.json (meural-mcp init)")
+
+
 def authenticated(
     authorization: Optional[str] = Header(default=None),
     x_meural_mcp_token: Optional[str] = Header(default=None, alias="X-Meural-MCP-Token"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ) -> None:
     expected = os.getenv("MEURAL_MCP_API_TOKEN") or load_config().get("api_token")
     if not expected:
@@ -92,7 +104,12 @@ def create_app() -> FastAPI:
         async with remote_mcp_server.session_manager.run():
             yield
 
-    api_app = FastAPI(title="MeuralMCP Manager", lifespan=lifespan)
+    api_app = FastAPI(
+        title="MeuralMCP",
+        description="Local Meural frame control. Agent guide: /llms.txt (full: /agents.md). "
+                    "All routes except /healthz, /llms.txt and /agents.md need a bearer token.",
+        lifespan=lifespan,
+    )
     remote_mcp_app = remote_mcp_server.streamable_http_app()
     api_app.mount("/mcp", BearerTokenASGIMiddleware(remote_mcp_app))
     register_routes(api_app)
@@ -103,6 +120,14 @@ def register_routes(api_app: FastAPI) -> None:
     @api_app.get("/healthz")
     def healthz():
         return {"ok": True}
+
+    @api_app.get("/llms.txt", include_in_schema=False)
+    def llms():
+        return _data_file("llms.txt")
+
+    @api_app.get("/agents.md", include_in_schema=False)
+    def agents_doc():
+        return _data_file("agents.md")
 
     @api_app.get("/devices", dependencies=[Depends(authenticated)])
     def list_devices():

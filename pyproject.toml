@@ -1,6 +1,6 @@
 [project]
 name = "meural-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local API, REST and MCP control for Meural Canvas frames"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,3 +16,6 @@ meural-mcp = "meural_mcp.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+meural_mcp = ["data/*.txt", "data/*.md"]

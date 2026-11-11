@@ -1,34 +1,18 @@
-"""Device registry, image store, and gallery publishing into the local API.
-
-A frame trusts this host for api.meural.com, so "showing an image" means
-publishing a one-item gallery into the service's data directory and queueing a
-`get_galleries` command for that frame. Nothing here talks to Netgear.
-"""
+"""Device registry, image store, and direct on-device gallery publishing."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import struct
 import tempfile
 import time
-import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
 from .local import FrameLocalClient
-
-GALLERY_BASE = 900000
-DEFAULT_SERVICE = {
-    "root": "/var/lib/meural-api",
-    "cert": "/etc/meural-api/chain.pem",
-    "key": "/etc/meural-api/key.pem",
-    "bind": "0.0.0.0",
-    "port": 443,
-}
 
 
 def now_iso() -> str:
@@ -47,7 +31,6 @@ def default_config() -> dict[str, Any]:
     return {
         "poll_seconds": 60,
         "reload_after_seconds": 0,
-        "service": dict(DEFAULT_SERVICE),
         "devices": [],
     }
 
@@ -62,8 +45,7 @@ def load_config(root: Optional[Path] = None) -> dict[str, Any]:
         return config
     loaded = json.loads(path.read_text())
     config = default_config()
-    config.update({key: value for key, value in loaded.items() if key != "devices"})
-    config["service"] = {**DEFAULT_SERVICE, **(loaded.get("service") or {})}
+    config.update({key: value for key, value in loaded.items() if key not in {"devices", "service"}})
     devices: dict[str, dict] = {}
     for device in loaded.get("devices", []):
         name = canonical_name(device["name"])
@@ -139,31 +121,17 @@ def normalise_orientation(value: Optional[str]) -> str:
     return aliases.get((value or "").strip().lower(), "landscape")
 
 
-def _md5(path: Path) -> str:
-    return hashlib.md5(path.read_bytes()).hexdigest()
-
-
-def _thumbnail(source: Path, target: Path, orientation: str) -> None:
-    from PIL import Image  # imported lazily so the rest works without Pillow
-
-    size = (270, 480) if orientation == "portrait" else (480, 270)
-    with Image.open(source) as img:
-        img.convert("RGB").resize(size).save(target, "JPEG", quality=85)
-
-
 class ManagerService:
     def __init__(
         self,
         root: Optional[Path] = None,
         config: Optional[dict[str, Any]] = None,
         local_client_factory: Optional[Callable[[str, int], FrameLocalClient]] = None,
-        thumbnailer: Optional[Callable[[Path, Path, str], None]] = None,
         now_provider: Optional[Callable[[], datetime]] = None,
     ):
         self.root = root or storage_dir()
         self.config = config or load_config(self.root)
         self.local_client_factory = local_client_factory or (lambda ip, timeout=5: FrameLocalClient(ip, timeout=timeout))
-        self.thumbnailer = thumbnailer or _thumbnail
         self.now_provider = now_provider or (lambda: datetime.now(timezone.utc))
         self.images_dir.mkdir(parents=True, exist_ok=True)
 
@@ -171,26 +139,6 @@ class ManagerService:
     @property
     def images_dir(self) -> Path:
         return self.root / "images"
-
-    @property
-    def service(self) -> dict[str, Any]:
-        return self.config.get("service") or dict(DEFAULT_SERVICE)
-
-    @property
-    def service_root(self) -> Path:
-        return Path(self.service["root"])
-
-    @property
-    def media_dir(self) -> Path:
-        return self.service_root / "media"
-
-    @property
-    def by_id_dir(self) -> Path:
-        return self.service_root / "by-id"
-
-    @property
-    def queues_dir(self) -> Path:
-        return self.service_root / "queues"
 
     # ---- devices ---------------------------------------------------------
     def devices(self) -> list[dict]:
@@ -212,46 +160,17 @@ class ManagerService:
                 return path
         return None
 
-    def gallery_id(self, name: str) -> int:
-        return GALLERY_BASE + zlib.crc32(canonical_name(name).encode()) % 90000
-
-    def product_key(self, device: dict) -> Optional[str]:
-        if device.get("product_key"):
-            return device["product_key"]
-        ip = device.get("local_ip")
-        if not ip:
-            return None
-        try:
-            ident = self.local_client_factory(ip, 3).identify()
-        except Exception:
-            return None
-        key = ident.get("product_key")
-        if key:
-            device["product_key"] = key
-            save_config(self.config, self.root)
-        return key
-
     def state(self) -> dict[str, Any]:
         return load_state(self.root)
 
     def save_state(self, state: dict[str, Any]) -> None:
         save_state(self.root, state)
 
-    def service_reachable(self) -> bool:
-        host = "127.0.0.1" if self.service.get("bind") in ("0.0.0.0", "::") else self.service.get("bind")
-        port = int(self.service.get("port", 443))
-        import socket
-
-        try:
-            with socket.create_connection((host, port), timeout=3):
-                return True
-        except OSError:
-            return False
-
     # ---- publishing ------------------------------------------------------
-    def _publish_to_device(self, device: dict, image: Path) -> dict[str, Any]:
-        """One-item gallery on the device, via its API. Nothing to queue."""
-        client = self._client(device, 60)
+    def _publish_to_device(
+        self, client: FrameLocalClient, device: dict, image: Path
+    ) -> dict[str, Any]:
+        """Publish a one-item gallery through the frame's authenticated API."""
         state = self.state()
         entry = state.setdefault("devices", {}).setdefault(device["name"], {})
         gid = entry.get("gallery_id")
@@ -275,106 +194,16 @@ class ManagerService:
         return {"status": "pass", "gallery_id": gid, "device": True}
 
     def publish(self, name: str) -> dict[str, Any]:
-        """Put the device's stored image on the frame.
-
-        With an api_token this goes through the frame's own API: one gallery per
-        device, the image uploaded into it, previous items dropped, then shown.
-        Without a token the legacy service/queue path is used.
-        """
+        """Upload the stored image, remove stale items, and show the new item."""
         device = self.device(name)
         image = self.image_path(name)
         if image is None:
             return {"status": "skipped", "reason": "no_image"}
-        if device.get("api_token"):
-            return self._publish_to_device(device, image)
-        orientation = normalise_orientation(device.get("orientation"))
-        gid = self.gallery_id(device["name"])
-        stem = device["name"]
-
-        self.media_dir.mkdir(parents=True, exist_ok=True)
-        self.by_id_dir.mkdir(parents=True, exist_ok=True)
-
-        ext = image.suffix.lower() if image.suffix.lower() in (".jpg", ".jpeg", ".png") else ".jpg"
-        full = self.media_dir / f"{stem}{ext}"
-        thumb = self.media_dir / f"{stem}_t.jpg"
-        full.write_bytes(image.read_bytes())
-        self.thumbnailer(full, thumb, orientation)
-
-        host = self.service.get("host") or "api.meural.com"
-        item = {
-            "id": gid + 1,
-            "title": device.get("display_name") or device["name"],
-            "is_detailed": False,
-            "description": "",
-            "medium": "",
-            "dimensions": "",
-            "location": "",
-            "year": "",
-            "author": "",
-            "creator_id": 1,
-            "partner_name": "",
-            "brightness": 0,
-            "gamma": 0.0,
-            "priority": 0,
-            "fill": 0,
-            "type": "image",
-            "link": False,
-            "copyright": "",
-            "orientation": orientation,
-            "url": f"https://{host}/media/{full.name}",
-            "thumb_url": f"https://{host}/media/{thumb.name}",
-            "permalink": None,
-            "bg_type": None,
-            "bg_color": None,
-            "placement_orientation": None,
-            "placement_coord_x": None,
-            "placement_coord_y": None,
-            "scale": None,
-            "overlay_name_font": None,
-            "overlay_caption_font": None,
-            "is_authenticated": False,
-            "thumb_checksum": _md5(thumb),
-            "thumb_size": thumb.stat().st_size,
-            "checksum": _md5(full),
-            "size": full.stat().st_size,
-        }
-        gallery = {
-            "is_ok": True,
-            "id": gid,
-            "name": f"MeuralMCP {device['name']}",
-            "description": "Managed by meural-mcp.",
-            "curator": "meural-mcp",
-            "type": "images",
-            "priority": 0,
-            "timeout": 0,
-            "orientation": 0 if orientation == "portrait" else 1,
-            "items": [item],
-            "cover_url": item["thumb_url"],
-            "cover_checksum": item["thumb_checksum"],
-            "cover_size": item["thumb_size"],
-        }
-        (self.by_id_dir / f"{gid}.json").write_text(json.dumps(gallery))
-        queued = self.enqueue(device, {
-            "type": "command",
-            "command": "get_galleries",
-            "parameter": gid,
-            "body": {"id": gid, "include_items": True, "bg_download": False},
-        })
-        return {"status": "pass", "gallery_id": gid, "queued": queued}
-
-    def enqueue(self, device: dict, command: dict) -> bool:
-        key = self.product_key(device)
-        if not key:
-            return False
-        self.queues_dir.mkdir(parents=True, exist_ok=True)
-        path = self.queues_dir / f"{key}.json"
-        try:
-            items = json.loads(path.read_text()) if path.exists() else []
-        except ValueError:
-            items = []
-        items.append(command)
-        path.write_text(json.dumps(items))
-        return True
+        return self._on_device_call(
+            name,
+            lambda client: self._publish_to_device(client, device, image),
+            timeout=60,
+        )
 
     # ---- image writes ----------------------------------------------------
     def set_image(self, name: str, data: bytes, filename: Optional[str] = None) -> dict[str, Any]:
@@ -603,14 +432,10 @@ class ManagerService:
         )
 
     def sleep(self, name: str) -> dict[str, Any]:
-        device = self.device(name)
-        self._client(device).sleep()
-        return {"status": "pass"}
+        return self._on_device_call(name, lambda client: client.sleep())
 
     def wake(self, name: str) -> dict[str, Any]:
-        device = self.device(name)
-        self._client(device).wake()
-        return {"status": "pass"}
+        return self._on_device_call(name, lambda client: client.wake())
 
     def device_status(self, name: str) -> dict[str, Any]:
         device = self.device(name)
@@ -622,9 +447,8 @@ class ManagerService:
             "enabled": bool(device.get("enabled", True)),
             "orientation": normalise_orientation(device.get("orientation")),
             "local_ip": device.get("local_ip"),
-            "product_key": device.get("product_key"),
             "image": str(image) if image else None,
-            "gallery_id": state.get("gallery_id") if device.get("api_token") else self.gallery_id(device["name"]),
+            "gallery_id": state.get("gallery_id"),
             "reachable": None,
             "last_reachability_check_at": state.get("last_reachability_check_at"),
             "state": state,
@@ -657,7 +481,6 @@ class ManagerService:
 
     def summary(self) -> dict[str, Any]:
         return {
-            "service": {"reachable": self.service_reachable(), **self.service},
             "devices_total": len(self.devices()),
             "devices_enabled": sum(1 for d in self.devices() if d.get("enabled", True)),
         }
@@ -739,7 +562,11 @@ class ManagerService:
             if in_window == entry.get("asleep"):
                 continue
             try:
-                self.sleep(device["name"]) if in_window else self.wake(device["name"])
+                result = self.sleep(device["name"]) if in_window else self.wake(device["name"])
+                if result.get("status") != "pass":
+                    entry["sleep_error"] = result.get("reason") or result.get("error") or "sleep_action_failed"
+                    continue
+                entry.pop("sleep_error", None)
                 entry["asleep"] = in_window
                 changed.append({"device": device["name"], "asleep": in_window})
             except Exception as exc:

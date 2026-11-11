@@ -1,6 +1,6 @@
 [Unit]
 Description=MeuralMCP daemon (sleep schedules)
-After=network-online.target meural-api.service
+After=network-online.target
 
 [Service]
 User=meural-mcp

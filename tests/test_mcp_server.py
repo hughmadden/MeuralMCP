@@ -3,6 +3,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from meural_mcp.mcp_server import (
     mcp_clear_device_image,
@@ -24,24 +25,33 @@ class McpServerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        for sub in ("media", "by-id", "queues"):
-            (self.root / "svc" / sub).mkdir(parents=True)
+        self.frame = Mock()
+        self.frame.gallery_exists.return_value = False
+        self.frame.create_gallery.return_value = "5555"
+        self.frame.upload_item.return_value = "777"
+        self.frame.gallery_items.return_value = [{"id": "777"}]
+        self.frame.identify.return_value = {"alias": "Canvas", "orientation": "landscape"}
+        self.frame.current_gallery.return_value = {"current_gallery": "5555", "current_item": "777"}
+        self.frame_patcher = patch("meural_mcp.manager.FrameLocalClient", return_value=self.frame)
+        self.frame_patcher.start()
         self.config = {
-            "service": {"root": str(self.root / "svc"), "port": 443},
             "devices": [{
                 "name": "canvas-1", "display_name": "Canvas 1",
-                "local_ip": "192.0.2.10", "product_key": "KEY-1",
-                "orientation": "landscape", "enabled": True,
+                "local_ip": "192.0.2.10", "orientation": "landscape",
+                "enabled": True, "api_token": "frame-token",
             }],
         }
 
     def tearDown(self):
+        self.frame_patcher.stop()
         self.tmp.cleanup()
 
     def test_list_devices(self):
         result = mcp_list_devices(storage_dir=self.root, config=self.config)
         self.assertEqual(result["devices_total"], 1)
         self.assertEqual(len(result["devices"]), 1)
+        self.assertEqual(result["devices"][0]["name"], "canvas-1")
+        self.assertNotIn("state", result["devices"][0])
 
     def test_set_image_data_then_get(self):
         result = mcp_set_device_image_data(

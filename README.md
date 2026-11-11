@@ -23,8 +23,7 @@ the loop.
 - Each frame running its on-device API, with its token in the config. One
   command per frame: `ssh root@FRAME "sh /root/uf.sh token"`.
 
-No DNS, certificate or firewall work. `docs/deploy.md` keeps the older
-certificate/DNS path for estates that pre-date the on-device API.
+No DNS, certificate, command queue, or legacy compatibility service is used.
 
 ## Quick start
 
@@ -35,8 +34,7 @@ meural-mcp add-device --name canvas-1 --ip 192.0.2.10 --orientation landscape \
   --token "$(ssh root@192.0.2.10 'sh /root/uf.sh token')"
 ```
 
-A device added without `--token` falls back to the frame's unauthenticated
-`/remote` API on port 80.
+Every device requires its on-device API token; there is no tokenless fallback.
 
 Run the API and daemon:
 

@@ -16,9 +16,12 @@ class CliTests(unittest.TestCase):
 
     def test_parser_has_expected_commands(self):
         parser = build_parser()
-        for command in ("init", "add-device", "serve", "mcp", "daemon", "publish-all", "service-install"):
+        commands = parser._subparsers._group_actions[0].choices
+        for command in ("init", "add-device", "serve", "mcp", "daemon", "publish-all"):
             with self.subTest(command=command):
-                self.assertIn(command, parser._subparsers._group_actions[0].choices)
+                self.assertIn(command, commands)
+        self.assertNotIn("service-install", commands)
+        self.assertNotIn("--product-key", commands["add-device"]._option_string_actions)
 
     def test_init_writes_token(self):
         self.assertEqual(main(["--storage-dir", str(self.root), "init", "--api-token", "abc"]), 0)
@@ -35,6 +38,7 @@ class CliTests(unittest.TestCase):
         config = json.loads((self.root / "config.json").read_text())
         self.assertEqual(config["devices"][0]["name"], "canvas-one")
         self.assertEqual(config["devices"][0]["orientation"], "portrait")
+        self.assertNotIn("product_key", config["devices"][0])
 
     def test_add_device_replaces_same_name(self):
         main(["--storage-dir", str(self.root), "init", "--api-token", "abc"])
@@ -51,7 +55,7 @@ class CliTests(unittest.TestCase):
         config = json.loads(path.read_text())
         config["devices"][0].update({
             "enabled": False,
-            "product_key": "existing-key",
+            "custom_field": "preserved",
             "schedule": {"enabled": True, "timezone": "Australia/Sydney", "sleep_start": "19:30", "wake_time": "07:00"},
         })
         path.write_text(json.dumps(config))
@@ -62,7 +66,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(device["api_token"], "frame-token")
         self.assertEqual(device["orientation"], "portrait")
         self.assertFalse(device["enabled"])
-        self.assertEqual(device["product_key"], "existing-key")
+        self.assertEqual(device["custom_field"], "preserved")
+        self.assertNotIn("product_key", device)
         self.assertEqual(device["schedule"]["sleep_start"], "19:30")
 
         main(["--storage-dir", str(self.root), "add-device", "--name", "canvas-1", "--ip", "192.0.2.12"])

@@ -1,200 +1,117 @@
 # Deploying MeuralMCP
 
-Operator guide. Covers per-device tokens, installation, and the legacy
-certificate/DNS path. Agent-facing method docs are in [agents.md](agents.md).
+Operator guide for the on-device-only service. Agent-facing methods are in
+[agents.md](agents.md). MeuralMCP drives each frame through its own
+MeuralDeviceControl API on `:8099`; there is no queue, frame-facing replacement
+cloud service, DNS override, certificate, or tokenless compatibility path.
 
-## Preferred: on-device API
+## Requirements
 
-Each frame runs its own token-gated API on `:8099`, installed with
-`update-frame.sh setup`. The service authenticates to it with a per-device
-token, held in the config:
+- A host that can reach the frames on the LAN.
+- Each frame running MeuralDeviceControl with its unique token in homepi's config.
+- Python 3.11 or later.
+
+Get a frame token using its documented mechanism (for example
+`ssh root@FRAME "sh /root/uf.sh token"` when installed). Keep it secret like the
+global REST bearer token. Config must be mode 600.
+
+## Install
+
+Install from an exact source release into a virtual environment:
+
+```sh
+python3 -m venv /opt/meural-mcp/.venv
+/opt/meural-mcp/.venv/bin/pip install /path/to/meural-mcp
+```
+
+Create the config and register each frame:
+
+```sh
+meural-mcp --storage-dir /var/lib/meural-mcp init
+meural-mcp --storage-dir /var/lib/meural-mcp add-device \
+  --name canvas-1 --ip 192.0.2.10 --orientation landscape \
+  --token "<frame-token>"
+```
+
+Example:
 
 ```json
-{"devices": [{"name": "canvas-1", "local_ip": "192.0.2.10",
-              "api_token": "<from: ssh root@FRAME \"sh /root/uf.sh token\">"}]}
+{
+  "poll_seconds": 60,
+  "reload_after_seconds": 0,
+  "devices": [
+    {
+      "name": "canvas-1",
+      "display_name": "Canvas 1",
+      "local_ip": "192.0.2.10",
+      "api_token": "<frame-token>",
+      "orientation": "landscape",
+      "enabled": true,
+      "schedule": {
+        "enabled": false,
+        "timezone": "Australia/Sydney",
+        "sleep_start": "19:30",
+        "wake_time": "07:00"
+      }
+    }
+  ]
+}
 ```
 
-`chmod 600` the config. With a token, publishing uploads into a per-device
-gallery on the frame and switches to it; there is no queue, no certificate and
-no DNS work. A device with `api_token: null` falls back to the legacy path
-below.
+`add-device` preserves existing device fields when only a token is updated.
+Every configured device needs a token; on-device-only operations return
+`on_device_api_required` if one is absent.
 
-## What runs where
+## Services
 
-Two pieces:
-
-1. **`meural-api`** — a small HTTPS service on port 443 that the frames talk to
-   instead of Netgear. Installed by `service/meural-api-install`, runs as its own
-   user, stores galleries under `/var/lib/meural-api`.
-2. **`meural-mcp`** — this package: CLI, REST API and MCP server. It publishes
-   images into `meural-api` and queues commands. It does not serve the frames.
-
-Both belong on the same host, on the same layer 2 segment as the frames.
-
-## 1. Certificate
-
-The frames validate TLS against a frozen trust store, so `meural-api` must present
-a certificate for **`api.meural.com`** that the frames already trust:
-
-- **Subject/SAN:** `api.meural.com`
-- **Format:** PEM chain — leaf first, then any intermediates. Key unencrypted PEM.
-- **Place:** `/etc/meural-api/chain.pem` and `/etc/meural-api/key.pem`, owned
-  `root:meural-api`, mode 640. The service runs as `meural-api` and must read
-  both; `600 root:root` leaves it unable to start.
-
-The frames do not check revocation, so a chain from an internal or lab CA works
-provided the root is already in the frames' store. A chain that also covers
-`*.api.meural.com` is fine but not required.
-
-Paths are configurable in `/etc/meural-api/meural.conf` if you keep them
-elsewhere.
-
-Verify before going further, from another host:
+Run the agent-facing REST/MCP API and the sleep daemon using the supplied user or
+system units in `examples/systemd/`:
 
 ```sh
-openssl s_client -connect 192.0.2.5:443 -servername api.meural.com </dev/null 2>&1 | grep "Verify return code"
+meural-mcp serve --host 127.0.0.1 --port 8733
+meural-mcp daemon
 ```
 
-That must report `0 (ok)`. An endless `unknown_ca` usually means only the leaf is
-being served — the chain file must contain the intermediates.
+Keep the API on loopback and put the existing reverse proxy in front for remote
+agents. Samples are in `examples/reverse-proxy/`. Disable response buffering for
+MCP and set `MEURAL_MCP_ALLOWED_HOSTS` to the public hostname (including the port
+when clients send it) so DNS-rebinding protection remains enabled.
 
-## 2. Isolate the frames
+The old frame-facing `meural-api` system service is not installed or used.
 
-Frames must not reach Netgear, or the cloud can move them elsewhere.
+## Publishing and status
 
-- Give them their own network or DHCP scope where possible.
-- Block their outbound internet at the router, or on this host:
+`POST /devices/<name>/image` stores the supplied image on homepi, uploads it into
+a managed on-device gallery, removes stale items, and selects the gallery and new
+item. `POST /devices/<name>/publish` repeats that operation without a new upload.
+No command queue or periodic reapply service is needed.
 
-```sh
-nft add rule inet filter forward ip saddr <frame-subnet> oifname <wan> drop
-```
+Use `GET /devices` for inventory and `GET /devices/<name>` for current status.
+`gallery_id` is `null` until the first direct publish. Galleries, settings,
+actions, and immediate pictures use the routes in [agents.md](agents.md).
 
-- Let them reach the host running `meural-api`. If you also block forwarding
-  between frame segments, explicitly accept traffic to this host's address, or
-  the frames cannot load anything.
+## Sleep schedules
 
-If the frames share a segment with the host, blocking their default gateway is
-usually enough.
+Per-device suspend windows are set in config or over MCP
+(`set_device_schedule`) and applied by `meural-mcp daemon`. See
+[sleep-schedules.md](sleep-schedules.md).
 
-## 3. DNS
+## Security and verification
 
-Point the frames' DNS at the host running `meural-api`, and make it answer
-`api.meural.com` with its own address.
+- Frame tokens are full-control credentials and plaintext on the LAN. Restrict
+  access to the frame and homepi networks, keep config mode 600, and do not log
+  tokens or raw settings.
+- Settings reads redact credential-like values unless `include_sensitive=true`
+  is explicitly requested.
+- Power, network, input, gallery-delete, and item-delete operations can be
+  disruptive; invoke them deliberately.
 
-### Reconfiguring DNS
+Verify without changing the displayed image:
 
-Use whatever serves DHCP for the frame scope. Set the DNS option for those leases
-to this host's address on that segment, then force the frames to renew (reboot
-them, or drop their leases). They keep the old value until they renew.
-
-Two worked examples:
-
-**dnsmasq** (the pattern this project was built on). Serve DNS only on the frame
-interface and answer the name:
-
-```conf
-# /etc/dnsmasq.d/meural.conf
-interface=eth1
-bind-dynamic
-address=/api.meural.com/192.0.2.5
-```
-
-Do not add a `dhcp-range` if your router hands out DHCP; dnsmasq only needs to
-answer DNS. If dnsmasq already serves that scope, add the `address=` line to it
-and skip the rest.
-
-**Router DHCP.** Set the DNS server for the frame reservation or the frame VLAN to
-the host address. Most consumer routers cannot set DNS per client, so a dedicated
-VLAN or a dnsmasq/AdGuard/Pi-hole instance is usually the simple route.
-
-Check from a client on the frame segment:
-
-```sh
-dig +short api.meural.com @192.0.2.5
-```
-
-It must return the host address. `tcpdump -n -i eth1 port 53` on the host should
-show the frames asking.
-
-Also blackhole NTP so the frames cannot drag their clock forward (see §5):
-
-```conf
-address=/ntp.ubuntu.com/#
-address=/pool.ntp.org/#
-```
-
-## 4. Install
-
-```sh
-sudo sh service/meural-api-install
-sudo systemctl enable --now meural-api
-```
-
-Then this package, as the `meural-mcp` user:
-
-```sh
-sudo -u meural-mcp python3 -m venv /opt/meural-mcp/.venv
-sudo -u meural-mcp /opt/meural-mcp/.venv/bin/pip install /path/to/meural-mcp
-```
-
-Copy `examples/config.example.json` to
-`/var/lib/meural-mcp/config.json`, then generate a token and register frames:
-
-```sh
-sudo -u meural-mcp meural-mcp --storage-dir /var/lib/meural-mcp init
-sudo -u meural-mcp meural-mcp --storage-dir /var/lib/meural-mcp add-device \
-  --name canvas-1 --ip 192.0.2.10 --orientation landscape
-```
-
-Install the API and daemon units from `examples/systemd/`, or run
-`meural-mcp serve` and `meural-mcp daemon` by hand.
-
-Keep the API on loopback; remote agents reach it through a reverse proxy. Working
-samples are in `examples/reverse-proxy/` (nginx and Caddy). Both must disable
-response buffering or the MCP response stream breaks, and both require
-`MEURAL_MCP_ALLOWED_HOSTS=<public hostname>` on the service, because the transport
-validates the `Host` header it is given.
-
-## 5. Clock
-
-A chain has a validity window, and the frame's clock decides whether it applies.
-Outside the window the frame aborts with `certificate_expired` and stops polling.
-
-`service/pin-clock.sh` sets a frame's clock over its plain-HTTP LAN API. Run it at
-boot once frames are reachable, and keep NTP blackholed. List frame addresses in
-`/var/lib/meural-api/frames.txt`; the script also picks up current LAN neighbours.
-
-Set `PIN_LO` and `PIN_HI` to dates inside your certificate's validity window — the
-defaults are examples only. The script keeps the clock advancing with real time
-and freezes it at `PIN_HI`, so an expired chain never bites.
-
-## 6. Sleep schedules
-
-Optional per-device suspend windows are set over MCP (`set_device_schedule`) or
-config and applied by `meural-mcp daemon` — so the daemon must run for them to
-take effect. See [sleep-schedules.md](sleep-schedules.md).
-
-## 7. Firmware and CA updates
-
-Nothing proxies to Netgear, so updates are inert: the frames are told everything
-is fine and nothing changes. Useful for stability, but it means a real firmware or
-CA update cannot arrive. Reintroduce a proxy if you ever need one.
-
-## 8. Verify
-
-1. `s_client` reports `Verify return code: 0 (ok)`.
-2. `dig` from the frame segment returns the host.
-3. Frames appear in `/var/log/meural-api/access.log` with a product key.
-4. Setting an image returns `pass` and the frame shows it.
-5. `/var/lib/meural-api/status/<key>` shows the frame reporting the new gallery.
-
-## 9. Troubleshooting
-
-| Symptom | Likely cause |
-| --- | --- |
-| Frames never call the API | DNS still points at the router, or leases not renewed |
-| `unknown_ca` alerts | chain file has no intermediates |
-| Frames poll but images never appear | gallery rejected — orientation or checksum |
-| Frame stops polling entirely | clock outside the certificate window |
-| `download item failed` in `report_command_error` | wrong checksum or size in the manifest |
-| Frame reverts to old art | old galleries still assigned on the Netgear account |
+1. `GET /healthz` returns `{"ok": true}`.
+2. Authenticated `GET /devices` returns the expected inventory.
+3. `GET /devices/<name>/time`, `/galleries`, and `/settings/schema` return
+   `status=pass` for each tokenized frame.
+4. Use a temporary gallery to verify create/upload/read/delete, then remove it.
+5. Publish the stored image and confirm the frame reports the expected gallery
+   and current item.

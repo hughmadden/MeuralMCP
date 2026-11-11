@@ -15,8 +15,7 @@ Two kinds of reader, kept separate:
 - **Agents using the service** — `docs/agents.md` only. It documents MCP tools and
   REST routes and deliberately avoids how the frames are driven, certificates,
   DNS and token handling.
-- **Operators** — `README.md` and `docs/deploy.md`. Per-device tokens, install,
-  and the legacy certificate/DNS path.
+- **Operators** — `README.md` and `docs/deploy.md`. Per-device tokens and install.
 
 When changing the tool surface, update `docs/agents.md` and `llms.txt`. When
 changing deployment, update `docs/deploy.md`. Do not leak operator detail into the
@@ -24,7 +23,6 @@ agent docs.
 
 ## Code layout
 
-- `service/` — the HTTPS API the frames talk to, its unit and installer.
 - `src/meural_mcp/manager.py` — device registry, image store, gallery publishing.
 - `src/meural_mcp/mcp_server.py`, `api.py`, `cli.py` — surfaces over the manager.
 - `examples/` — generic config and systemd samples.

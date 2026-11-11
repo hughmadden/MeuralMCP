@@ -88,7 +88,6 @@ class ManagerFeatureTests(unittest.TestCase):
         self.service = ManagerService(
             root=self.root,
             config={
-                "service": {"root": str(self.root / "svc")},
                 "devices": [
                     {
                         "name": "canvas-1",
@@ -309,6 +308,8 @@ class ManagerFeatureTests(unittest.TestCase):
             lambda: self.service.get_settings_schema("canvas-2"),
             lambda: self.service.update_settings("canvas-2", {"brightness": 1}),
             lambda: self.service.run_action("canvas-2", "resume"),
+            lambda: self.service.sleep("canvas-2"),
+            lambda: self.service.wake("canvas-2"),
         ]
         self.timeouts.clear()
         for feature_call in calls:

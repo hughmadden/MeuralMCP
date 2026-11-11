@@ -20,7 +20,7 @@ orientation, enabled flag, current reachability, and the assigned image path.
 ### `get_device_status(name)`
 
 One device: the same fields plus frame-reported alias, firmware version and
-orientation, its current gallery, and the last recorded state.
+orientation, its current gallery, and the on-device gallery state.
 
 ### `get_device_image(name)`
 

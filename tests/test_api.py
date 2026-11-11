@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
@@ -27,17 +27,25 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        for sub in ("media", "by-id", "queues"):
-            (self.root / "svc" / sub).mkdir(parents=True)
+        self.frame = Mock()
+        self.frame.gallery_exists.return_value = False
+        self.frame.create_gallery.return_value = "5555"
+        self.frame.upload_item.return_value = "777"
+        self.frame.gallery_items.return_value = [{"id": "777"}]
+        self.frame.identify.return_value = {"alias": "Canvas", "orientation": "landscape"}
+        self.frame.current_gallery.return_value = {"current_gallery": "5555", "current_item": "777"}
         config = {
             "api_token": TOKEN,
-            "service": {"root": str(self.root / "svc"), "port": 443},
             "devices": [{
                 "name": "canvas-1", "display_name": "Canvas 1", "local_ip": "192.0.2.10",
-                "product_key": "KEY-1", "orientation": "landscape", "enabled": True,
+                "orientation": "landscape", "enabled": True, "api_token": "frame-token",
             }],
         }
-        service = ManagerService(root=self.root, config=config)
+        service = ManagerService(
+            root=self.root,
+            config=config,
+            local_client_factory=lambda ip, timeout=5: self.frame,
+        )
         os.environ["MEURAL_MCP_API_TOKEN"] = TOKEN
         self.patcher = patch("meural_mcp.api.service", return_value=service)
         self.patcher.start()

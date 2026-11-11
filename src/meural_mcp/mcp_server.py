@@ -33,6 +33,17 @@ def _service(
     return ManagerService(root=root, config=config)
 
 
+DEVICE_LIST_FIELDS = (
+    "name", "display_name", "enabled", "orientation", "local_ip",
+    "image", "gallery_id", "reachable", "frame", "current_gallery",
+)
+
+
+def _device_list_entry(device: dict[str, Any]) -> dict[str, Any]:
+    """Return the documented inventory fields, not bulky historical state."""
+    return {key: device.get(key) for key in DEVICE_LIST_FIELDS}
+
+
 def mcp_list_devices(
     storage_dir: str | Path | None = None,
     config: Optional[dict[str, Any]] = None,
@@ -43,11 +54,15 @@ def mcp_list_devices(
     remote = _remote_client(api_url, api_token, verify_tls)
     if remote:
         result = remote.summary_status()
-        result["devices"] = remote.list_devices().get("devices", [])
+        result["devices"] = [
+            _device_list_entry(device) for device in remote.list_devices().get("devices", [])
+        ]
         return result
     service = _service(storage_dir=storage_dir, config=config)
     result = service.summary_status()
-    result["devices"] = [service.device_status(device["name"]) for device in service.devices()]
+    result["devices"] = [
+        _device_list_entry(service.device_status(device["name"])) for device in service.devices()
+    ]
     return result
 
 
@@ -307,7 +322,7 @@ def build_mcp_server(
 
     @server.tool()
     def get_device_status(name: str) -> dict[str, Any]:
-        """Get one device's inventory and status, including display name, product key, LAN IP, orientation, reachability, state, and assigned image."""
+        """Get one device's inventory and status, including display name, LAN IP, orientation, reachability, state, and assigned image."""
         return mcp_get_device_status(name)
 
     @server.tool()
@@ -327,7 +342,7 @@ def build_mcp_server(
 
     @server.tool()
     def publish_device(name: str) -> dict[str, Any]:
-        """Re-publish the stored image and queue it for the frame (use after it drifts)."""
+        """Re-publish the stored image directly to the frame's on-device API."""
         return mcp_publish_device(name)
 
     @server.tool()

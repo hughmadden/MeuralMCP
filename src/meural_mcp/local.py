@@ -1,11 +1,5 @@
-"""Frame client.
+"""Client for a frame's authenticated on-device API on port 8099."""
 
-Two transports:
-  * token set   -> the frame's on-device API on :8099 (preferred)
-  * no token    -> the old unauthenticated /remote API on port 80 (legacy)
-"""
-
-import base64
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,9 +25,7 @@ class FrameLocalClient:
 
     @property
     def base_url(self) -> str:
-        if self.token:
-            return f"http://{self.host}:{DEVICE_PORT}"
-        return f"http://{self.host}"
+        return f"http://{self.host}:{DEVICE_PORT}"
 
     def _params(self, extra: Optional[dict] = None) -> dict:
         params = dict(extra or {})
@@ -62,15 +54,12 @@ class FrameLocalClient:
 
     # ---- identity --------------------------------------------------------
     def identify(self) -> dict:
-        if not self.token:
-            return self.get("/remote/identify").get("response", {})
         status = self.get("/local/status").get("status", {})
         return {
             "alias": status.get("alias"),
             "name": status.get("alias"),
             "orientation": status.get("orientation"),
             "version": status.get("version"),
-            "product_key": status.get("product_key"),
         }
 
     def status(self) -> dict:
@@ -80,8 +69,6 @@ class FrameLocalClient:
         return self.get("/api/v3/time")
 
     def current_gallery(self) -> dict:
-        if not self.token:
-            return self.get("/remote/get_gallery_status_json").get("response", {})
         status = self.status()
         return {"current_gallery": status.get("current_gallery"),
                 "current_item": status.get("current_item")}
@@ -94,13 +81,9 @@ class FrameLocalClient:
         return self.get(f"/local/gallery/{gallery_id}")
 
     def gallery_items(self, gallery_id: str | int) -> List[dict]:
-        if not self.token:
-            return self.get(f"/remote/get_frame_items_by_gallery_json/{gallery_id}/").get("response", [])
         return self.get(f"/local/gallery/{gallery_id}").get("gallery", {}).get("items", [])
 
     def gallery_exists(self, gallery_id: str | int) -> bool:
-        if not self.token:
-            return True
         try:
             self.get(f"/local/gallery/{gallery_id}")
             return True
@@ -151,25 +134,13 @@ class FrameLocalClient:
         return self.post("/local/setpic", data={"path": path, "timeout": timeout})
 
     def change_gallery(self, gallery_id: str | int) -> dict:
-        if not self.token:
-            return self.get(f"/remote/control_command/change_gallery/{gallery_id}")
         return self.post(f"/local/show/gallery/{gallery_id}")
 
     def change_item(self, item_id: str | int) -> dict:
-        if not self.token:
-            return self.get(f"/remote/control_command/change_item/{item_id}")
         return self.post(f"/local/show/item/{item_id}")
 
     def sleep(self) -> dict:
-        if not self.token:
-            return self.get("/remote/control_command/suspend")
         return self.post("/local/action", data={"do": "suspend"})
 
     def wake(self) -> dict:
-        if not self.token:
-            return self.get("/remote/control_command/resume")
         return self.post("/local/action", data={"do": "resume"})
-
-    def postcard(self, image_path: Path) -> dict:
-        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-        return self.post("/remote/postcard", data={"photo": encoded}, timeout=30)

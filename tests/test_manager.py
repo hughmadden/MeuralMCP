@@ -2,11 +2,18 @@ import json
 import struct
 import tempfile
 import unittest
-import zlib
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
-from meural_mcp.manager import ManagerService, canonical_name, image_dimensions, normalise_orientation
+from meural_mcp.manager import (
+    ManagerService,
+    canonical_name,
+    default_config,
+    image_dimensions,
+    load_config,
+    normalise_orientation,
+)
 
 
 def png_bytes(width: int, height: int) -> bytes:
@@ -18,104 +25,86 @@ class ManagerTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.service_root = self.root / "svc"
-        for sub in ("media", "by-id", "queues"):
-            (self.service_root / sub).mkdir(parents=True)
-        self.identify_calls = []
-
-        def factory(ip, timeout=5):
-            client = Mock()
-            self.identify_calls.append(ip)
-            client.identify.return_value = {"product_key": f"KEY-{ip}", "orientation": "landscape"}
-            client.current_gallery.return_value = {"current_gallery": "1"}
-            return client
+        self.client = Mock()
+        self.client.identify.return_value = {"alias": "Canvas 1", "orientation": "landscape"}
+        self.client.current_gallery.return_value = {"current_gallery": "1"}
+        self.client.gallery_exists.return_value = False
+        self.client.create_gallery.return_value = "5555"
+        self.client.upload_item.return_value = "777"
+        self.client.gallery_items.return_value = [{"id": "777"}]
+        self.client.change_gallery.return_value = {"is_ok": True}
+        self.client.change_item.return_value = {"is_ok": True}
+        self.client.delete_item.return_value = {"is_ok": True}
+        self.client.sleep.return_value = {"is_ok": True}
+        self.client.wake.return_value = {"is_ok": True}
 
         self.service = ManagerService(
             root=self.root,
             config={
-                "service": {"root": str(self.service_root), "port": 443, "bind": "0.0.0.0"},
                 "devices": [{
                     "name": "canvas-1", "display_name": "Canvas 1", "local_ip": "192.0.2.10",
-                    "orientation": "landscape", "enabled": True, "product_key": "KEY-1",
+                    "orientation": "landscape", "enabled": True, "api_token": "frame-token",
                 }],
             },
-            local_client_factory=factory,
-            thumbnailer=lambda src, dst, orientation: dst.write_bytes(b"thumb"),
+            local_client_factory=lambda ip, timeout=5: self.client,
         )
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_publish_writes_gallery_and_queues_command(self):
+    def test_publish_uses_device_api(self):
+        calls = []
+        self.client.gallery_items.return_value = [{"id": "777"}, {"id": "666"}]
+        self.client.change_gallery.side_effect = lambda gid: calls.append(("show", gid))
+        self.client.change_item.side_effect = lambda iid: calls.append(("select", iid))
+        self.client.delete_item.side_effect = lambda iid: calls.append(("del", iid))
+
+        status = self.service.device_status("canvas-1")
+        self.assertIsNone(status["gallery_id"])
+        self.assertNotIn("product_key", status)
+
         self.service.set_image("canvas-1", png_bytes(1920, 1080), "a.png")
         result = self.service.publish("canvas-1")
 
         self.assertEqual(result["status"], "pass")
-        gid = result["gallery_id"]
-        gallery = json.loads((self.service_root / "by-id" / f"{gid}.json").read_text())
-        item = gallery["items"][0]
-        self.assertEqual(gallery["orientation"], 1)
-        self.assertEqual(item["orientation"], "landscape")
-        self.assertTrue(item["checksum"])
-        self.assertEqual(item["size"], (self.service_root / "media" / "canvas-1.png").stat().st_size)
-
-        queued = json.loads((self.service_root / "queues" / "KEY-1.json").read_text())
-        self.assertEqual(queued[0]["command"], "get_galleries")
-        self.assertEqual(queued[0]["parameter"], gid)
-        self.assertEqual(self.service.device_status("canvas-1")["gallery_id"], gid)
-
-    def test_publish_uses_device_api_when_token_present(self):
-        """With an api_token, publish goes to the frame and queues nothing."""
-        calls = []
-        client = Mock()
-        client.identify.return_value = {"product_key": "KEY-1", "orientation": "landscape"}
-        client.gallery_exists.return_value = False
-        client.create_gallery.return_value = "5555"
-        client.upload_item.return_value = "777"
-        client.gallery_items.return_value = [{"id": "777"}, {"id": "666"}]
-        client.change_gallery.side_effect = lambda gid: calls.append(("show", gid))
-        client.change_item.side_effect = lambda iid: calls.append(("select", iid))
-        client.delete_item.side_effect = lambda iid: calls.append(("del", iid))
-
-        def factory(ip, timeout=5):
-            return client
-
-        service = ManagerService(
-            root=self.root,
-            config={
-                "service": {"root": str(self.service_root), "port": 443, "bind": "0.0.0.0"},
-                "devices": [{
-                    "name": "canvas-1", "display_name": "Canvas 1", "local_ip": "192.0.2.10",
-                    "orientation": "landscape", "enabled": True,
-                    "product_key": "KEY-1", "api_token": "tok",
-                }],
-            },
-            local_client_factory=factory,
-            thumbnailer=lambda src, dst, orientation: dst.write_bytes(b"thumb"),
-        )
-        self.assertIsNone(service.device_status("canvas-1")["gallery_id"])
-        service.set_image("canvas-1", png_bytes(1920, 1080), "a.png")
-        result = service.publish("canvas-1")
-
-        self.assertEqual(result["status"], "pass")
         self.assertTrue(result.get("device"))
         self.assertEqual(result["gallery_id"], "5555")
-        # the stale item is removed, the new one shown
+        # The stale item is removed, and the new gallery and item are shown.
         self.assertIn(("del", "666"), calls)
         self.assertIn(("show", "5555"), calls)
         self.assertIn(("select", "777"), calls)
-        self.assertFalse((self.service_root / "queues" / "KEY-1.json").exists())
-        # REST consumers must see the on-device gallery, not the legacy hash ID.
-        self.assertEqual(service.device_status("canvas-1")["gallery_id"], "5555")
+        self.client.upload_item.assert_any_call(
+            "5555", self.service.image_path("canvas-1"), title="Canvas 1"
+        )
+        self.assertEqual(self.service.device_status("canvas-1")["gallery_id"], "5555")
 
         # Cleanup failure is not a false pass; the new item is still selected.
-        client.delete_item.side_effect = RuntimeError("delete failed")
+        self.client.delete_item.side_effect = RuntimeError("delete failed")
         with self.assertRaisesRegex(RuntimeError, "delete failed"):
-            service.publish("canvas-1")
+            self.service.publish("canvas-1")
         self.assertEqual(calls[-1], ("select", "777"))
 
-    def test_gallery_id_is_stable(self):
-        self.assertEqual(self.service.gallery_id("canvas-1"), self.service.gallery_id("Canvas_1"))
+    def test_publish_requires_api_token(self):
+        factory = Mock()
+        service = ManagerService(
+            root=self.root / "tokenless",
+            config={"devices": [{"name": "canvas-2", "orientation": "landscape"}]},
+            local_client_factory=factory,
+        )
+        (service.images_dir / "canvas-2.png").write_bytes(png_bytes(1920, 1080))
+
+        self.assertEqual(
+            service.publish("canvas-2"),
+            {"status": "failed", "reason": "on_device_api_required"},
+        )
+        factory.assert_not_called()
+        self.assertIsNone(service.device_status("canvas-2")["gallery_id"])
+
+    def test_summary_contains_only_device_counts(self):
+        self.service.config["devices"].append({"name": "canvas-2", "enabled": False})
+        expected = {"devices_total": 2, "devices_enabled": 1}
+        self.assertEqual(self.service.summary(), expected)
+        self.assertEqual(self.service.summary_status(), expected)
 
     def test_orientation_mismatch_rejected(self):
         result = self.service.set_image("canvas-1", png_bytes(1080, 1920), "p.png")
@@ -140,16 +129,11 @@ class ManagerTestCase(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.service.device("nope")
 
-    def test_product_key_discovered_and_saved(self):
-        self.service.config["devices"][0]["product_key"] = None
-        self.service.config["devices"][0]["local_ip"] = "192.0.2.11"
-        self.service.product_key(self.service.device("canvas-1"))
-        self.assertIn("192.0.2.11", self.identify_calls)
-        self.assertTrue((self.root / "config.json").exists())
-
     def test_sleep_and_wake(self):
         self.assertEqual(self.service.sleep("canvas-1")["status"], "pass")
         self.assertEqual(self.service.wake("canvas-1")["status"], "pass")
+        self.client.sleep.assert_called_once_with()
+        self.client.wake.assert_called_once_with()
 
 
 class ScheduleTests(ManagerTestCase):
@@ -175,19 +159,56 @@ class ScheduleTests(ManagerTestCase):
 
     def test_daemon_edge_applies_sleep_then_wake(self):
         self.service.set_schedule("canvas-1", "22:00", "07:00", "Etc/UTC")
-        client = Mock()
-        self.service.local_client_factory = lambda ip, timeout=5: client
-        from datetime import datetime, timezone
         self.service.now_provider = lambda: datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
         self.assertEqual(self.service.apply_sleep_schedules()[0]["asleep"], True)
-        client.sleep.assert_called_once()
+        self.client.sleep.assert_called_once()
         self.service.now_provider = lambda: datetime(2026, 1, 2, 9, 0, tzinfo=timezone.utc)
         self.assertEqual(self.service.apply_sleep_schedules()[0]["asleep"], False)
-        client.wake.assert_called_once()
+        self.client.wake.assert_called_once()
+
+    def test_daemon_retries_after_frame_rejects_sleep(self):
+        self.service.set_schedule("canvas-1", "22:00", "07:00", "Etc/UTC")
+        self.service.now_provider = lambda: datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+        self.client.sleep.return_value = {"is_ok": False, "error": "busy"}
+        self.assertEqual(self.service.apply_sleep_schedules(), [])
+        entry = self.service.state()["devices"]["canvas-1"]
+        self.assertNotIn("asleep", entry)
+        self.assertEqual(entry["sleep_error"], "on_device_api_failed")
+
+        self.client.sleep.return_value = {"is_ok": True}
+        self.assertEqual(self.service.apply_sleep_schedules()[0]["asleep"], True)
+        entry = self.service.state()["devices"]["canvas-1"]
+        self.assertTrue(entry["asleep"])
+        self.assertNotIn("sleep_error", entry)
+
+    def test_daemon_does_not_mark_tokenless_sleep_as_success(self):
+        self.service.config["devices"][0].pop("api_token")
+        self.service.set_schedule("canvas-1", "22:00", "07:00", "Etc/UTC")
+        self.service.now_provider = lambda: datetime(2026, 1, 1, 23, 0, tzinfo=timezone.utc)
+        self.assertEqual(self.service.apply_sleep_schedules(), [])
+        entry = self.service.state()["devices"]["canvas-1"]
+        self.assertNotIn("asleep", entry)
+        self.assertEqual(entry["sleep_error"], "on_device_api_required")
+        self.client.sleep.assert_not_called()
 
     def test_disabled_schedule_ignored(self):
         self.service.set_schedule("canvas-1", "22:00", "07:00", enabled=False)
         self.assertEqual(self.service.apply_sleep_schedules(), [])
+
+
+class ConfigTests(unittest.TestCase):
+    def test_default_and_loaded_config_omit_legacy_service(self):
+        self.assertNotIn("service", default_config())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "config.json").write_text(json.dumps({
+                "poll_seconds": 15,
+                "service": {"root": "/legacy", "port": 443},
+                "devices": [],
+            }))
+            config = load_config(root)
+        self.assertEqual(config["poll_seconds"], 15)
+        self.assertNotIn("service", config)
 
 
 class HelperTests(unittest.TestCase):

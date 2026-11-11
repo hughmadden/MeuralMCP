@@ -196,7 +196,7 @@ def register_routes(api_app: FastAPI) -> None:
 
     @api_app.post("/devices/{name}/publish", dependencies=[Depends(authenticated)])
     def publish_device(name: str):
-        """Re-publish the stored image and queue the gallery for this frame."""
+        """Re-publish the stored image directly to the frame's on-device API."""
         try:
             return service().publish(name)
         except KeyError:

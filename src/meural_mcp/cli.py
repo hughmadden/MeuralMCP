@@ -2,7 +2,6 @@ import argparse
 import json
 import os
 import secrets
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -15,8 +14,6 @@ from .manager import (
     save_config,
     storage_dir,
 )
-
-SERVICE_DIR = Path(__file__).resolve().parents[2] / "service"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -33,11 +30,9 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--ip", required=True, help="frame LAN address")
     add.add_argument("--orientation", default=None, choices=["landscape", "portrait"])
     add.add_argument("--display-name", default=None)
-    add.add_argument("--product-key", default=None, help="frame product key (discovered if omitted)")
     add.add_argument("--token", default=None,
                      help="frame API token from `uf.sh token` (enables the on-device API)")
 
-    sub.add_parser("service-install", help="install the local API service (needs root)")
     sub.add_parser("publish-all", help="re-publish stored images for every enabled device")
 
     sub.add_parser("daemon", help="sleep schedules and optional periodic re-publish")
@@ -92,11 +87,11 @@ def main(argv: list[str] | None = None) -> int:
         previous = next((d for d in config["devices"] if d["name"] == name), {})
         orientation = normalise_orientation(args.orientation or previous.get("orientation") or "landscape")
         device = dict(previous)
+        device.pop("product_key", None)
         device.update({
             "name": name,
             "display_name": args.display_name or previous.get("display_name") or args.name,
             "local_ip": args.ip,
-            "product_key": args.product_key if args.product_key is not None else previous.get("product_key"),
             "orientation": orientation,
             "enabled": previous.get("enabled", True),
             "api_token": args.token if args.token is not None else previous.get("api_token"),
@@ -108,13 +103,6 @@ def main(argv: list[str] | None = None) -> int:
                       "orientation": orientation,
                       "api_token": bool(args.token)})
         return 0
-
-    if args.command == "service-install":
-        script = SERVICE_DIR / "meural-api-install"
-        if not script.exists():
-            print(f"missing {script}", file=sys.stderr)
-            return 2
-        return subprocess.call(["sh", str(script)])
 
     if args.command == "publish-all":
         service = ManagerService(root=root)

@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     add = sub.add_parser("add-device", help="register a frame")
     add.add_argument("--name", required=True)
     add.add_argument("--ip", required=True, help="frame LAN address")
-    add.add_argument("--orientation", default="landscape", choices=["landscape", "portrait"])
+    add.add_argument("--orientation", default=None, choices=["landscape", "portrait"])
     add.add_argument("--display-name", default=None)
     add.add_argument("--product-key", default=None, help="frame product key (discovered if omitted)")
     add.add_argument("--token", default=None,
@@ -89,19 +89,23 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "add-device":
         config = load_config(root)
         name = canonical_name(args.name)
-        config["devices"] = [d for d in config["devices"] if d["name"] != name]
-        config["devices"].append({
+        previous = next((d for d in config["devices"] if d["name"] == name), {})
+        orientation = normalise_orientation(args.orientation or previous.get("orientation") or "landscape")
+        device = dict(previous)
+        device.update({
             "name": name,
-            "display_name": args.display_name or args.name,
+            "display_name": args.display_name or previous.get("display_name") or args.name,
             "local_ip": args.ip,
-            "product_key": args.product_key,
-            "orientation": normalise_orientation(args.orientation),
-            "enabled": True,
-            "api_token": args.token,
+            "product_key": args.product_key if args.product_key is not None else previous.get("product_key"),
+            "orientation": orientation,
+            "enabled": previous.get("enabled", True),
+            "api_token": args.token if args.token is not None else previous.get("api_token"),
         })
+        config["devices"] = [d for d in config["devices"] if d["name"] != name]
+        config["devices"].append(device)
         save_config(config, root)
         print_result({"added": name, "ip": args.ip,
-                      "orientation": normalise_orientation(args.orientation),
+                      "orientation": orientation,
                       "api_token": bool(args.token)})
         return 0
 

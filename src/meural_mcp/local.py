@@ -15,8 +15,11 @@ DEVICE_PORT = 8099
 
 
 class FrameLocalError(RuntimeError):
-    def __init__(self, status: int, url: str, body: str = ""):
+    def __init__(self, status: int, url: str, body: str = "", secret: Optional[str] = None):
         self.status = status
+        if secret:
+            url = url.replace(secret, "<redacted>")
+            body = body.replace(secret, "<redacted>")
         super().__init__("%s -> %s %s" % (url, status, body[:200]))
 
 
@@ -40,7 +43,7 @@ class FrameLocalClient:
 
     def _check(self, response: requests.Response) -> None:
         if response.status_code >= 400:
-            raise FrameLocalError(response.status_code, response.url, response.text)
+            raise FrameLocalError(response.status_code, response.url, response.text, secret=self.token)
         return
 
     def get(self, path: str, timeout: int | None = None, params: Optional[dict] = None) -> Dict[str, Any]:

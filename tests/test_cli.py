@@ -44,6 +44,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(config["devices"]), 1)
         self.assertEqual(config["devices"][0]["local_ip"], "192.0.2.11")
 
+    def test_add_device_token_preserves_existing_fields(self):
+        main(["--storage-dir", str(self.root), "init", "--api-token", "abc"])
+        main(["--storage-dir", str(self.root), "add-device", "--name", "canvas-1", "--ip", "192.0.2.10", "--orientation", "portrait"])
+        path = self.root / "config.json"
+        config = json.loads(path.read_text())
+        config["devices"][0].update({
+            "enabled": False,
+            "product_key": "existing-key",
+            "schedule": {"enabled": True, "timezone": "Australia/Sydney", "sleep_start": "19:30", "wake_time": "07:00"},
+        })
+        path.write_text(json.dumps(config))
+
+        main(["--storage-dir", str(self.root), "add-device", "--name", "canvas-1", "--ip", "192.0.2.11", "--token", "frame-token"])
+        device = json.loads(path.read_text())["devices"][0]
+        self.assertEqual(device["local_ip"], "192.0.2.11")
+        self.assertEqual(device["api_token"], "frame-token")
+        self.assertEqual(device["orientation"], "portrait")
+        self.assertFalse(device["enabled"])
+        self.assertEqual(device["product_key"], "existing-key")
+        self.assertEqual(device["schedule"]["sleep_start"], "19:30")
+
+        main(["--storage-dir", str(self.root), "add-device", "--name", "canvas-1", "--ip", "192.0.2.12"])
+        device = json.loads(path.read_text())["devices"][0]
+        self.assertEqual(device["api_token"], "frame-token")
+        self.assertEqual(device["orientation"], "portrait")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,20 +62,22 @@ class ManagerTestCase(unittest.TestCase):
         queued = json.loads((self.service_root / "queues" / "KEY-1.json").read_text())
         self.assertEqual(queued[0]["command"], "get_galleries")
         self.assertEqual(queued[0]["parameter"], gid)
+        self.assertEqual(self.service.device_status("canvas-1")["gallery_id"], gid)
 
     def test_publish_uses_device_api_when_token_present(self):
         """With an api_token, publish goes to the frame and queues nothing."""
         calls = []
+        client = Mock()
+        client.identify.return_value = {"product_key": "KEY-1", "orientation": "landscape"}
+        client.gallery_exists.return_value = False
+        client.create_gallery.return_value = "5555"
+        client.upload_item.return_value = "777"
+        client.gallery_items.return_value = [{"id": "777"}, {"id": "666"}]
+        client.change_gallery.side_effect = lambda gid: calls.append(("show", gid))
+        client.change_item.side_effect = lambda iid: calls.append(("select", iid))
+        client.delete_item.side_effect = lambda iid: calls.append(("del", iid))
 
         def factory(ip, timeout=5):
-            client = Mock()
-            client.identify.return_value = {"product_key": "KEY-1", "orientation": "landscape"}
-            client.gallery_exists.return_value = False
-            client.create_gallery.return_value = "5555"
-            client.upload_item.return_value = "777"
-            client.gallery_items.return_value = [{"id": "777"}, {"id": "666"}]
-            client.change_gallery.side_effect = lambda gid: calls.append(("show", gid))
-            client.delete_item.side_effect = lambda iid: calls.append(("del", iid))
             return client
 
         service = ManagerService(
@@ -91,6 +93,7 @@ class ManagerTestCase(unittest.TestCase):
             local_client_factory=factory,
             thumbnailer=lambda src, dst, orientation: dst.write_bytes(b"thumb"),
         )
+        self.assertIsNone(service.device_status("canvas-1")["gallery_id"])
         service.set_image("canvas-1", png_bytes(1920, 1080), "a.png")
         result = service.publish("canvas-1")
 
@@ -100,7 +103,16 @@ class ManagerTestCase(unittest.TestCase):
         # the stale item is removed, the new one shown
         self.assertIn(("del", "666"), calls)
         self.assertIn(("show", "5555"), calls)
+        self.assertIn(("select", "777"), calls)
         self.assertFalse((self.service_root / "queues" / "KEY-1.json").exists())
+        # REST consumers must see the on-device gallery, not the legacy hash ID.
+        self.assertEqual(service.device_status("canvas-1")["gallery_id"], "5555")
+
+        # Cleanup failure is not a false pass; the new item is still selected.
+        client.delete_item.side_effect = RuntimeError("delete failed")
+        with self.assertRaisesRegex(RuntimeError, "delete failed"):
+            service.publish("canvas-1")
+        self.assertEqual(calls[-1], ("select", "777"))
 
     def test_gallery_id_is_stable(self):
         self.assertEqual(self.service.gallery_id("canvas-1"), self.service.gallery_id("Canvas_1"))

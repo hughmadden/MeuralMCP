@@ -260,13 +260,17 @@ class ManagerService:
             self.save_state(state)
 
         item_id = client.upload_item(gid, image, title=device.get("display_name") or device["name"])
+        delete_failed = []
         for other in client.gallery_items(gid):
             if str(other.get("id")) != str(item_id):
                 try:
                     client.delete_item(other["id"])
                 except Exception:
-                    pass
+                    delete_failed.append(other.get("id"))
         client.change_gallery(gid)
+        client.change_item(item_id)
+        if delete_failed:
+            raise RuntimeError(f"delete failed for stale item(s): {delete_failed}")
         return {"status": "pass", "gallery_id": gid, "device": True}
 
     def publish(self, name: str) -> dict[str, Any]:
@@ -448,7 +452,7 @@ class ManagerService:
             "local_ip": device.get("local_ip"),
             "product_key": device.get("product_key"),
             "image": str(image) if image else None,
-            "gallery_id": self.gallery_id(device["name"]),
+            "gallery_id": state.get("gallery_id") if device.get("api_token") else self.gallery_id(device["name"]),
             "reachable": None,
             "last_reachability_check_at": state.get("last_reachability_check_at"),
             "state": state,

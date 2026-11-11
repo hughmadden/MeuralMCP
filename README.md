@@ -23,7 +23,7 @@ the loop.
 - Each frame running its on-device API, with its token in the config. One
   command per frame: `ssh root@FRAME "sh /root/uf.sh token"`.
 
-No DNS, certificate, command queue, or legacy compatibility service is used.
+No additional frame-facing service is required.
 
 ## Quick start
 
@@ -34,7 +34,7 @@ meural-mcp add-device --name canvas-1 --ip 192.0.2.10 --orientation landscape \
   --token "$(ssh root@192.0.2.10 'sh /root/uf.sh token')"
 ```
 
-Every device requires its on-device API token; there is no tokenless fallback.
+Every device requires its on-device API token.
 
 Run the API and daemon:
 
@@ -81,7 +81,7 @@ image server-side too, so re-publishing and reboots work with no agent running.
 Nothing is proxied to Netgear.
 
 With a token the work happens over the frame's own API (`:8099`); the frame
-holds the file itself and no polling or command queue is involved.
+holds the file itself.
 
 ## Sleep schedules
 

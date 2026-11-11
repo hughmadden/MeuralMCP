@@ -1,8 +1,7 @@
 # MeuralMCP
 
 Local control of Netgear Meural Canvas frames: CLI, REST API and MCP server.
-Each frame is driven through its own MeuralDeviceControl API on :8099. There is
-no command queue or tokenless compatibility service.
+Each frame is driven through its own MeuralDeviceControl API on :8099.
 
 This file is a map for agents. The method surface is docs/agents.md — an agent
 using the MCP tools does not need the operator material.

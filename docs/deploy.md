@@ -2,13 +2,12 @@
 
 Operator guide for the on-device-only service. Agent-facing methods are in
 [agents.md](agents.md). MeuralMCP drives each frame through its own
-MeuralDeviceControl API on `:8099`; there is no queue, frame-facing replacement
-cloud service, DNS override, certificate, or tokenless compatibility path.
+MeuralDeviceControl API on `:8099`; no additional frame-facing service is required.
 
 ## Requirements
 
 - A host that can reach the frames on the LAN.
-- Each frame running MeuralDeviceControl with its unique token in homepi's config.
+- Each frame running MeuralDeviceControl with its unique token in the MeuralMCP config.
 - Python 3.11 or later.
 
 Get a frame token using its documented mechanism (for example
@@ -77,14 +76,13 @@ agents. Samples are in `examples/reverse-proxy/`. Disable response buffering for
 MCP and set `MEURAL_MCP_ALLOWED_HOSTS` to the public hostname (including the port
 when clients send it) so DNS-rebinding protection remains enabled.
 
-The old frame-facing `meural-api` system service is not installed or used.
 
 ## Publishing and status
 
-`POST /devices/<name>/image` stores the supplied image on homepi, uploads it into
-a managed on-device gallery, removes stale items, and selects the gallery and new
-item. `POST /devices/<name>/publish` repeats that operation without a new upload.
-No command queue or periodic reapply service is needed.
+`POST /devices/<name>/image` stores the supplied image on the service host,
+uploads it into a managed on-device gallery, removes stale items, and selects the
+gallery and new item. `POST /devices/<name>/publish` repeats that operation
+without a new upload. Publishing is immediate; no periodic reapply is required.
 
 Use `GET /devices` for inventory and `GET /devices/<name>` for current status.
 `gallery_id` is `null` until the first direct publish. Galleries, settings,
@@ -99,7 +97,7 @@ Per-device suspend windows are set in config or over MCP
 ## Security and verification
 
 - Frame tokens are full-control credentials and plaintext on the LAN. Restrict
-  access to the frame and homepi networks, keep config mode 600, and do not log
+  access to the frame and service-host networks, keep config mode 600, and do not log
   tokens or raw settings.
 - Settings reads redact credential-like values unless `include_sensitive=true`
   is explicitly requested.

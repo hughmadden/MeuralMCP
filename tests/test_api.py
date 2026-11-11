@@ -69,6 +69,24 @@ class ApiTests(unittest.TestCase):
         self.assertIn("HTTPBearer", schema["components"]["securitySchemes"])
         self.assertTrue(schema["paths"]["/devices"]["get"]["security"])
 
+    def test_openapi_declares_on_device_feature_routes(self):
+        paths = self.client.get("/openapi.json").json()["paths"]
+        required = {
+            "/devices/{name}/time",
+            "/devices/{name}/galleries",
+            "/devices/{name}/galleries/{gallery_id}",
+            "/devices/{name}/galleries/{gallery_id}/items",
+            "/devices/{name}/galleries/{gallery_id}/show",
+            "/devices/{name}/items/{item_id}",
+            "/devices/{name}/items/{item_id}/show",
+            "/devices/{name}/picture",
+            "/devices/{name}/settings",
+            "/devices/{name}/settings/schema",
+            "/devices/{name}/action",
+        }
+        self.assertLessEqual(required, set(paths))
+        self.assertNotIn("/devices/{name}/preview", paths)
+
     def test_requires_token(self):
         self.assertEqual(self.client.get("/status").status_code, 401)
 

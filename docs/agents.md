@@ -14,9 +14,10 @@ Served over stdio (`meural-mcp mcp`) or as a hosted streamable-HTTP endpoint at
 
 ### `list_devices`
 
-No arguments. Returns every configured device with name, display name, IP,
-orientation, enabled flag, current reachability, assigned image, and current
-gallery. Full historical state is available through `get_device_status`.
+No arguments. Returns `status=pass`, device counts, and every configured device
+with name, display name, IP, orientation, enabled flag, current reachability,
+assigned image, and current gallery. Full historical state is available through
+`get_device_status`.
 
 ### `get_device_status(name)`
 
@@ -172,7 +173,7 @@ GET    /devices/{name}/settings      <- include_sensitive=true only for raw secr
 GET    /devices/{name}/settings/schema
 POST   /devices/{name}/settings      <- {"column": "value"}
 POST   /devices/{name}/action        <- {"action": "resume", "value": null, "value2": null}
-GET    /status                        -> service and device summary
+GET    /status                        -> device counts
 GET    /healthz
 ```
 

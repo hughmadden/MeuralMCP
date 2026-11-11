@@ -4,8 +4,9 @@ Local control of Netgear Meural Canvas frames. Publish images to a frame from a
 CLI, a REST API, or an MCP server, without the mobile app and without Netgear in
 the loop.
 
-- **Local API** — a small HTTPS service answers the frames in place of the Meural
-  cloud, so they load art from your own host.
+- **On-device API** — each frame is driven through the API it serves itself
+  (`:8099`), authenticated with a per-device token. No DNS changes, no
+  certificate, no man-in-the-middle.
 - **REST API** — token-protected, loopback by default.
 - **MCP server** — stdio or hosted streamable-HTTP, so coding agents can set
   images directly.
@@ -16,23 +17,24 @@ the loop.
 
 ## Requirements
 
-- Linux host on the same layer 2 segment as the frames.
-- A TLS certificate the frames trust for `api.meural.com` (PEM chain, leaf first).
-- DNS for the frames pointed at that host, and their internet blocked.
+- A host that can reach the frames on the LAN.
+- Each frame running its on-device API, with its token in the config. One
+  command per frame: `ssh root@FRAME "sh /root/uf.sh token"`.
 
-The certificate is the only fiddly prerequisite. See
-[deploying](docs/deploy.md) for the certificate, DNS and firewall work.
+No DNS, certificate or firewall work. `docs/deploy.md` keeps the older
+certificate/DNS path for estates that pre-date the on-device API.
 
 ## Quick start
 
 ```sh
 pip install .
 meural-mcp init
-meural-mcp add-device --name canvas-1 --ip 192.0.2.10 --orientation landscape
+meural-mcp add-device --name canvas-1 --ip 192.0.2.10 --orientation landscape \
+  --token "$(ssh root@192.0.2.10 'sh /root/uf.sh token')"
 ```
 
-Deploy the local API and point DNS at the host first — until then the frames have
-nothing to talk to. Full steps: [docs/deploy.md](docs/deploy.md).
+A device added without `--token` falls back to the frame's unauthenticated
+`/remote` API on port 80.
 
 Run the API and daemon:
 
@@ -73,11 +75,13 @@ meural-mcp mcp --transport stdio
 
 ## How it works
 
-The frames poll `api.meural.com` for commands and galleries. With DNS pointed at
-this host and a trusted certificate, they take commands from here instead.
-Setting an image publishes a one-item gallery and queues it for that frame; the
-frame fetches the image and holds it. Nothing is proxied to Netgear, so cloud
-changes cannot move a frame.
+Setting an image uploads it into a per-device gallery on the frame and switches
+that frame to it — one image per device, managed by name. The service stores the
+image server-side too, so re-publishing and reboots work with no agent running.
+Nothing is proxied to Netgear.
+
+With a token the work happens over the frame's own API (`:8099`); the frame
+holds the file itself and no polling or command queue is involved.
 
 ## Sleep schedules
 
@@ -86,8 +90,9 @@ config. See [docs/sleep-schedules.md](docs/sleep-schedules.md).
 
 ## Caveats
 
-- Certificate chains expire. Keep the frames' clocks correct and NTP blocked, or
-  keep the chain long-lived — see [deploying](docs/deploy.md#clock).
+- The token is a full-control credential in the config; `chmod 600` it and treat
+  it like the API token.
+- Frames must run the on-device API; a stock frame answers only `/remote`.
 - Firmware updates do not arrive on their own while the frames are isolated.
 - One image per device is held.
 

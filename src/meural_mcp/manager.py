@@ -248,12 +248,40 @@ class ManagerService:
             return False
 
     # ---- publishing ------------------------------------------------------
+    def _publish_to_device(self, device: dict, image: Path) -> dict[str, Any]:
+        """One-item gallery on the device, via its API. Nothing to queue."""
+        client = self._client(device, 60)
+        state = self.state()
+        entry = state.setdefault("devices", {}).setdefault(device["name"], {})
+        gid = entry.get("gallery_id")
+        if not gid or not client.gallery_exists(gid):
+            gid = client.create_gallery(f"MeuralMCP {device['name']}")
+            entry["gallery_id"] = gid
+            self.save_state(state)
+
+        item_id = client.upload_item(gid, image, title=device.get("display_name") or device["name"])
+        for other in client.gallery_items(gid):
+            if str(other.get("id")) != str(item_id):
+                try:
+                    client.delete_item(other["id"])
+                except Exception:
+                    pass
+        client.change_gallery(gid)
+        return {"status": "pass", "gallery_id": gid, "device": True}
+
     def publish(self, name: str) -> dict[str, Any]:
-        """Write the device's stored image into the service as a one-item gallery."""
+        """Put the device's stored image on the frame.
+
+        With an api_token this goes through the frame's own API: one gallery per
+        device, the image uploaded into it, previous items dropped, then shown.
+        Without a token the legacy service/queue path is used.
+        """
         device = self.device(name)
         image = self.image_path(name)
         if image is None:
             return {"status": "skipped", "reason": "no_image"}
+        if device.get("api_token"):
+            return self._publish_to_device(device, image)
         orientation = normalise_orientation(device.get("orientation"))
         gid = self.gallery_id(device["name"])
         stem = device["name"]
@@ -392,7 +420,11 @@ class ManagerService:
         ip = device.get("local_ip")
         if not ip:
             raise TimeoutError("no local IP for device")
-        return self.local_client_factory(ip, timeout)
+        client = self.local_client_factory(ip, timeout)
+        token = device.get("api_token")
+        if token:
+            client.token = token          # drives the :8099 token transport
+        return client
 
     def sleep(self, name: str) -> dict[str, Any]:
         device = self.device(name)

@@ -14,6 +14,7 @@
       "display_name": "Canvas 1",
       "local_ip": "192.0.2.10",
       "product_key": null,
+      "api_token": null,
       "orientation": "landscape",
       "enabled": true,
       "schedule": {

@@ -34,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--orientation", default="landscape", choices=["landscape", "portrait"])
     add.add_argument("--display-name", default=None)
     add.add_argument("--product-key", default=None, help="frame product key (discovered if omitted)")
+    add.add_argument("--token", default=None,
+                     help="frame API token from `uf.sh token` (enables the on-device API)")
 
     sub.add_parser("service-install", help="install the local API service (needs root)")
     sub.add_parser("publish-all", help="re-publish stored images for every enabled device")
@@ -79,7 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         save_config(config, root)
         config_path = root / "config.json"
         print(f"wrote {config_path}", file=sys.stderr)
-        print("Add frames with: meural-mcp add-device --name canvas-1 --ip <ip> --orientation <layout>", file=sys.stderr)
+        print("Add frames with: meural-mcp add-device --name canvas-1 --ip <ip> --orientation <layout> "
+              "--token <frame api token>", file=sys.stderr)
         print_result({"config_path": str(config_path), "api_token": token})
         return 0
 
@@ -94,9 +97,12 @@ def main(argv: list[str] | None = None) -> int:
             "product_key": args.product_key,
             "orientation": normalise_orientation(args.orientation),
             "enabled": True,
+            "api_token": args.token,
         })
         save_config(config, root)
-        print_result({"added": name, "ip": args.ip, "orientation": normalise_orientation(args.orientation)})
+        print_result({"added": name, "ip": args.ip,
+                      "orientation": normalise_orientation(args.orientation),
+                      "api_token": bool(args.token)})
         return 0
 
     if args.command == "service-install":

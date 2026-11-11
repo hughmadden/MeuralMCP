@@ -63,6 +63,45 @@ class ManagerTestCase(unittest.TestCase):
         self.assertEqual(queued[0]["command"], "get_galleries")
         self.assertEqual(queued[0]["parameter"], gid)
 
+    def test_publish_uses_device_api_when_token_present(self):
+        """With an api_token, publish goes to the frame and queues nothing."""
+        calls = []
+
+        def factory(ip, timeout=5):
+            client = Mock()
+            client.identify.return_value = {"product_key": "KEY-1", "orientation": "landscape"}
+            client.gallery_exists.return_value = False
+            client.create_gallery.return_value = "5555"
+            client.upload_item.return_value = "777"
+            client.gallery_items.return_value = [{"id": "777"}, {"id": "666"}]
+            client.change_gallery.side_effect = lambda gid: calls.append(("show", gid))
+            client.delete_item.side_effect = lambda iid: calls.append(("del", iid))
+            return client
+
+        service = ManagerService(
+            root=self.root,
+            config={
+                "service": {"root": str(self.service_root), "port": 443, "bind": "0.0.0.0"},
+                "devices": [{
+                    "name": "canvas-1", "display_name": "Canvas 1", "local_ip": "192.0.2.10",
+                    "orientation": "landscape", "enabled": True,
+                    "product_key": "KEY-1", "api_token": "tok",
+                }],
+            },
+            local_client_factory=factory,
+            thumbnailer=lambda src, dst, orientation: dst.write_bytes(b"thumb"),
+        )
+        service.set_image("canvas-1", png_bytes(1920, 1080), "a.png")
+        result = service.publish("canvas-1")
+
+        self.assertEqual(result["status"], "pass")
+        self.assertTrue(result.get("device"))
+        self.assertEqual(result["gallery_id"], "5555")
+        # the stale item is removed, the new one shown
+        self.assertIn(("del", "666"), calls)
+        self.assertIn(("show", "5555"), calls)
+        self.assertFalse((self.service_root / "queues" / "KEY-1.json").exists())
+
     def test_gallery_id_is_stable(self):
         self.assertEqual(self.service.gallery_id("canvas-1"), self.service.gallery_id("Canvas_1"))
 

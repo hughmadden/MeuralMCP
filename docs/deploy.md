@@ -1,7 +1,23 @@
 # Deploying MeuralMCP
 
-Operator guide. Covers the certificate, isolating the frames, DNS, and the
-service. Agent-facing method docs are in [agents.md](agents.md).
+Operator guide. Covers per-device tokens, installation, and the legacy
+certificate/DNS path. Agent-facing method docs are in [agents.md](agents.md).
+
+## Preferred: on-device API
+
+Each frame runs its own token-gated API on `:8099`, installed with
+`update-frame.sh setup`. The service authenticates to it with a per-device
+token, held in the config:
+
+```json
+{"devices": [{"name": "canvas-1", "local_ip": "192.0.2.10",
+              "api_token": "<from: ssh root@FRAME \"sh /root/uf.sh token\">"}]}
+```
+
+`chmod 600` the config. With a token, publishing uploads into a per-device
+gallery on the frame and switches to it; there is no queue, no certificate and
+no DNS work. A device with `api_token: null` falls back to the legacy path
+below.
 
 ## What runs where
 

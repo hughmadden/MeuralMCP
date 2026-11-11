@@ -41,6 +41,7 @@ class McpServerTests(unittest.TestCase):
     def test_list_devices(self):
         result = mcp_list_devices(storage_dir=self.root, config=self.config)
         self.assertEqual(result["devices_total"], 1)
+        self.assertEqual(len(result["devices"]), 1)
 
     def test_set_image_data_then_get(self):
         result = mcp_set_device_image_data(

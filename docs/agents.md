@@ -66,6 +66,58 @@ timezone. The daemon applies it at the edges; `sleep_start` may be later than
 
 Remove the schedule.
 
+### `get_device_time(name)`
+
+Return the frame's current epoch time.
+
+### `list_device_galleries(name)` / `get_device_gallery(name, gallery_id)`
+
+List on-device galleries and item counts, or fetch one gallery with its items.
+
+### `create_device_gallery(name, gallery_name)`
+
+Create an on-device gallery.
+
+### `upload_device_gallery_item(name, gallery_id, image_base64, filename, title)`
+
+Upload base64 image bytes into an on-device gallery and return its item id.
+
+### `show_device_gallery(name, gallery_id)` / `show_device_item(name, item_id)`
+
+Make a gallery current or display one item immediately.
+
+### `delete_device_gallery(name, gallery_id)` / `delete_device_item(name, item_id)`
+
+Delete an on-device gallery (the frame keeps items) or an item and its file/links.
+These are destructive operations.
+
+### `set_device_picture(name, path, timeout=600)`
+
+Display an image path that already exists **on the frame**. `timeout=0` keeps it
+until replaced. This is not a server-side path and does not upload bytes.
+
+### `get_device_settings(name, include_sensitive=False)`
+
+Read frame settings and hardware values. Credential-like fields are redacted by
+default. Set `include_sensitive=true` only when raw secret values are required;
+do not log the result.
+
+### `get_device_settings_schema(name)`
+
+Return every settable frame column and its type.
+
+### `update_device_settings(name, values)`
+
+Write one or more settings. The frame type-checks values. Results include
+`applied`, `rejected`, and `unknown`; status is `partial` when some values applied
+and others failed, and `failed` when none applied.
+
+### `run_device_action(name, action, value, value2)`
+
+Run a frame action with optional arguments. This exposes the frame's display,
+power, input, network, Bluetooth, locale, RTC and ambient-light actions. Power,
+network, and input actions can be disruptive. Values are validated by the frame.
+
 ## Result shape
 
 Success:
@@ -87,6 +139,7 @@ Failure carries a machine-readable reason:
 | `invalid_time` | times not `HH:MM` |
 | `identical_times` | `sleep_start` equals `wake_time` |
 | `unknown_timezone` | not an IANA timezone |
+| `on_device_api_required` | device has no per-frame token for the requested feature |
 
 ## REST equivalents
 
@@ -104,6 +157,20 @@ DELETE /devices/{name}/schedule
 POST   /devices/{name}/publish
 POST   /devices/{name}/sleep
 POST   /devices/{name}/wake
+GET    /devices/{name}/time
+GET    /devices/{name}/galleries
+POST   /devices/{name}/galleries     <- {"name": "Gallery name"}
+GET    /devices/{name}/galleries/{gallery_id}
+POST   /devices/{name}/galleries/{gallery_id}/items <- raw image bytes
+POST   /devices/{name}/galleries/{gallery_id}/show
+DELETE /devices/{name}/galleries/{gallery_id}
+POST   /devices/{name}/items/{item_id}/show
+DELETE /devices/{name}/items/{item_id}
+POST   /devices/{name}/picture       <- {"path": "/frame/local/image.jpg", "timeout": 600}
+GET    /devices/{name}/settings      <- include_sensitive=true only for raw secrets
+GET    /devices/{name}/settings/schema
+POST   /devices/{name}/settings      <- {"column": "value"}
+POST   /devices/{name}/action        <- {"action": "resume", "value": null, "value2": null}
 GET    /status                        -> service and device summary
 GET    /healthz
 ```

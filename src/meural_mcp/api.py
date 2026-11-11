@@ -85,6 +85,18 @@ def service() -> ManagerService:
     return ManagerService()
 
 
+def feature_response(call: Callable, *args) -> Response:
+    """Return a consistent HTTP result for on-device feature calls."""
+    try:
+        result = call(*args)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="device not found")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    status = 200 if result.get("status") in {"pass", "partial"} else 422
+    return Response(json.dumps(result), status_code=status, media_type="application/json")
+
+
 def mcp_allowed_hosts() -> list[str]:
     defaults = ["127.0.0.1", "127.0.0.1:*", "localhost", "localhost:*", "testserver", "testserver:*"]
     configured = os.getenv("MEURAL_MCP_ALLOWED_HOSTS", "")
@@ -189,6 +201,71 @@ def register_routes(api_app: FastAPI) -> None:
             return service().publish(name)
         except KeyError:
             raise HTTPException(status_code=404, detail="device not found")
+
+    @api_app.get("/devices/{name}/time", dependencies=[Depends(authenticated)])
+    def device_time(name: str):
+        return feature_response(service().device_time, name)
+
+    @api_app.get("/devices/{name}/galleries", dependencies=[Depends(authenticated)])
+    def list_galleries(name: str):
+        return feature_response(service().list_galleries, name)
+
+    @api_app.post("/devices/{name}/galleries", dependencies=[Depends(authenticated)])
+    def create_gallery(name: str, payload: dict):
+        return feature_response(service().create_gallery, name, payload.get("name", ""))
+
+    @api_app.get("/devices/{name}/galleries/{gallery_id}", dependencies=[Depends(authenticated)])
+    def get_gallery(name: str, gallery_id: str):
+        return feature_response(service().get_gallery, name, gallery_id)
+
+    @api_app.post("/devices/{name}/galleries/{gallery_id}/items", dependencies=[Depends(authenticated)])
+    async def upload_gallery_item(name: str, gallery_id: str, request: Request, title: Optional[str] = None):
+        body = await request.body()
+        if not body:
+            raise HTTPException(status_code=400, detail="empty image body")
+        suffix = ".png" if "png" in request.headers.get("content-type", "").lower() else ".jpg"
+        return feature_response(service().upload_gallery_item, name, gallery_id, body, suffix, title)
+
+    @api_app.post("/devices/{name}/galleries/{gallery_id}/show", dependencies=[Depends(authenticated)])
+    def show_gallery(name: str, gallery_id: str):
+        return feature_response(service().show_gallery, name, gallery_id)
+
+    @api_app.delete("/devices/{name}/galleries/{gallery_id}", dependencies=[Depends(authenticated)])
+    def delete_gallery(name: str, gallery_id: str):
+        return feature_response(service().delete_gallery, name, gallery_id)
+
+    @api_app.post("/devices/{name}/items/{item_id}/show", dependencies=[Depends(authenticated)])
+    def show_item(name: str, item_id: str):
+        return feature_response(service().show_item, name, item_id)
+
+    @api_app.delete("/devices/{name}/items/{item_id}", dependencies=[Depends(authenticated)])
+    def delete_item(name: str, item_id: str):
+        return feature_response(service().delete_item, name, item_id)
+
+    @api_app.post("/devices/{name}/picture", dependencies=[Depends(authenticated)])
+    def set_picture(name: str, payload: dict):
+        try:
+            timeout = int(payload.get("timeout", 600))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"invalid timeout: {exc}")
+        return feature_response(service().set_picture, name, payload.get("path", ""), timeout)
+
+    @api_app.get("/devices/{name}/settings", dependencies=[Depends(authenticated)])
+    def get_settings(name: str, include_sensitive: bool = False):
+        return feature_response(service().get_settings, name, include_sensitive)
+
+    @api_app.get("/devices/{name}/settings/schema", dependencies=[Depends(authenticated)])
+    def get_settings_schema(name: str):
+        return feature_response(service().get_settings_schema, name)
+
+    @api_app.post("/devices/{name}/settings", dependencies=[Depends(authenticated)])
+    def update_settings(name: str, payload: dict):
+        return feature_response(service().update_settings, name, payload)
+
+    @api_app.post("/devices/{name}/action", dependencies=[Depends(authenticated)])
+    def run_action(name: str, payload: dict):
+        action = payload.get("action") or payload.get("do") or ""
+        return feature_response(service().run_action, name, action, payload.get("value"), payload.get("value2"))
 
     @api_app.get("/devices/{name}/schedule", dependencies=[Depends(authenticated)])
     def get_device_schedule(name: str):

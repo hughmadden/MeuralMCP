@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import struct
+import tempfile
 import time
 import zlib
 from datetime import datetime, timezone
@@ -429,6 +430,177 @@ class ManagerService:
         if token:
             client.token = token          # drives the :8099 token transport
         return client
+
+    # ---- on-device API features ------------------------------------------
+    def _on_device_call(
+        self,
+        name: str,
+        call: Callable[[FrameLocalClient], Any],
+        *,
+        timeout: int = 5,
+        result_key: str = "result",
+    ) -> dict[str, Any]:
+        """Run an authenticated frame call and normalise its result envelope."""
+        device = self.device(name)
+        if not device.get("api_token"):
+            return {"status": "failed", "reason": "on_device_api_required"}
+        response = call(self._client(device, timeout))
+        if isinstance(response, dict):
+            if response.get("is_ok") is False:
+                return {**response, "status": "failed", "reason": "on_device_api_failed"}
+            # Validation failures produced inside a call are already envelopes.
+            if response.get("status") == "failed":
+                return response
+            return {**response, "status": "pass"}
+        return {"status": "pass", result_key: response}
+
+    def device_time(self, name: str) -> dict[str, Any]:
+        return self._on_device_call(name, lambda client: client.time(), timeout=15)
+
+    def list_galleries(self, name: str) -> dict[str, Any]:
+        return self._on_device_call(name, lambda client: client.list_galleries(), timeout=20)
+
+    def get_gallery(self, name: str, gallery_id: str | int) -> dict[str, Any]:
+        return self._on_device_call(
+            name, lambda client: client.gallery(gallery_id), timeout=20
+        )
+
+    def create_gallery(self, name: str, gallery_name: str) -> dict[str, Any]:
+        if not isinstance(gallery_name, str) or not gallery_name.strip():
+            return {"status": "failed", "reason": "invalid_gallery_name"}
+        return self._on_device_call(
+            name,
+            lambda client: client.create_gallery(gallery_name),
+            timeout=30,
+            result_key="gallery_id",
+        )
+
+    def upload_gallery_item(
+        self,
+        name: str,
+        gallery_id: str | int,
+        data: bytes,
+        filename: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> dict[str, Any]:
+        suffix = Path(filename).suffix.lower() if filename else ""
+        if suffix not in {".jpg", ".jpeg", ".png"}:
+            suffix = ".png" if data.startswith(b"\x89PNG\r\n\x1a\n") else ".jpg"
+
+        def upload(client: FrameLocalClient) -> Any:
+            temp_path: Optional[Path] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=".gallery-upload-",
+                    suffix=suffix,
+                    dir=self.images_dir,
+                    delete=False,
+                ) as temp:
+                    temp_path = Path(temp.name)
+                    temp.write(data)
+                try:
+                    image_dimensions(temp_path)
+                except (ValueError, struct.error):
+                    return {"status": "failed", "reason": "unreadable_image"}
+                return client.upload_item(gallery_id, temp_path, title=title)
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+
+        return self._on_device_call(
+            name, upload, timeout=60, result_key="item_id"
+        )
+
+    def show_gallery(self, name: str, gallery_id: str | int) -> dict[str, Any]:
+        return self._on_device_call(
+            name, lambda client: client.change_gallery(gallery_id), timeout=30
+        )
+
+    def show_item(self, name: str, item_id: str | int) -> dict[str, Any]:
+        return self._on_device_call(
+            name, lambda client: client.change_item(item_id), timeout=30
+        )
+
+    def delete_gallery(self, name: str, gallery_id: str | int) -> dict[str, Any]:
+        return self._on_device_call(
+            name, lambda client: client.delete_gallery(gallery_id), timeout=30
+        )
+
+    def delete_item(self, name: str, item_id: str | int) -> dict[str, Any]:
+        return self._on_device_call(
+            name, lambda client: client.delete_item(item_id), timeout=30
+        )
+
+    def set_picture(self, name: str, path: str, timeout: int = 600) -> dict[str, Any]:
+        if not isinstance(path, str) or not path.strip():
+            return {"status": "failed", "reason": "invalid_path"}
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 0:
+            return {"status": "failed", "reason": "invalid_timeout"}
+        return self._on_device_call(
+            name,
+            lambda client: client.set_picture(path, timeout=timeout),
+            timeout=max(60, timeout + 10),
+        )
+
+    @staticmethod
+    def _redact_settings(value: Any) -> Any:
+        if isinstance(value, dict):
+            redacted = {}
+            for key, item in value.items():
+                normalised = str(key).lower()
+                sensitive = normalised == "captive_user_value" or any(
+                    marker in normalised for marker in ("pass", "password", "token", "secret")
+                )
+                redacted[key] = "<redacted>" if sensitive else ManagerService._redact_settings(item)
+            return redacted
+        if isinstance(value, list):
+            return [ManagerService._redact_settings(item) for item in value]
+        return value
+
+    def get_settings(self, name: str, include_sensitive: bool = False) -> dict[str, Any]:
+        result = self._on_device_call(name, lambda client: client.settings(), timeout=20)
+        if include_sensitive is True:
+            return result
+        return self._redact_settings(result)
+
+    def get_settings_schema(self, name: str) -> dict[str, Any]:
+        return self._on_device_call(
+            name, lambda client: client.settings_schema(), timeout=20
+        )
+
+    def update_settings(self, name: str, values: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(values, dict) or not values:
+            return {"status": "failed", "reason": "invalid_settings"}
+        result = self._on_device_call(
+            name, lambda client: client.update_settings(values), timeout=45
+        )
+        if result["status"] == "failed":
+            return result
+        applied = result.get("applied")
+        rejected = result.get("rejected")
+        unknown = result.get("unknown")
+        if applied:
+            result["status"] = "partial" if rejected or unknown else "pass"
+        else:
+            result["status"] = "failed"
+            result["reason"] = "settings_rejected" if rejected or unknown else "no_settings_applied"
+        return result
+
+    def run_action(
+        self,
+        name: str,
+        action: str,
+        value: Any = None,
+        value2: Any = None,
+    ) -> dict[str, Any]:
+        if not isinstance(action, str) or not action.strip():
+            return {"status": "failed", "reason": "invalid_action"}
+        return self._on_device_call(
+            name,
+            lambda client: client.action(action, value, value2),
+            timeout=60,
+        )
 
     def sleep(self, name: str) -> dict[str, Any]:
         device = self.device(name)

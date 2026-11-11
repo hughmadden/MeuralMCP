@@ -24,11 +24,20 @@ using the MCP tools does not need the operator material.
 
 list_devices, get_device_status, get_device_image, set_device_image_data,
 clear_device_image, publish_device, sleep_device, wake_device,
-get_device_schedule, set_device_schedule, clear_device_schedule.
+get_device_schedule, set_device_schedule, clear_device_schedule,
+get_device_time, list_device_galleries, get_device_gallery,
+create_device_gallery, upload_device_gallery_item, show_device_gallery,
+show_device_item, delete_device_gallery, delete_device_item, set_device_picture,
+get_device_settings, get_device_settings_schema, update_device_settings,
+run_device_action.
 
 ## Result shape
 
 {"status": "pass", ...} on success; {"status": "failed", "reason": ...} otherwise.
 Reasons: device_not_found, image_not_found, image_base64_invalid,
 unreadable_image, orientation_mismatch, disabled, invalid_time,
-identical_times, unknown_timezone.
+identical_times, unknown_timezone, on_device_api_required.
+
+Settings reads redact credential-like values unless include_sensitive=true.
+Immediate picture paths are frame-local. Hardware/network actions and deletes can
+be disruptive; see docs/agents.md for exact arguments and REST equivalents.

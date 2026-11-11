@@ -76,6 +76,9 @@ class FrameLocalClient:
     def status(self) -> dict:
         return self.get("/local/status").get("status", {})
 
+    def time(self) -> dict:
+        return self.get("/api/v3/time")
+
     def current_gallery(self) -> dict:
         if not self.token:
             return self.get("/remote/get_gallery_status_json").get("response", {})
@@ -84,6 +87,12 @@ class FrameLocalClient:
                 "current_item": status.get("current_item")}
 
     # ---- galleries -------------------------------------------------------
+    def list_galleries(self) -> dict:
+        return self.get("/local/list")
+
+    def gallery(self, gallery_id: str | int) -> dict:
+        return self.get(f"/local/gallery/{gallery_id}")
+
     def gallery_items(self, gallery_id: str | int) -> List[dict]:
         if not self.token:
             return self.get(f"/remote/get_frame_items_by_gallery_json/{gallery_id}/").get("response", [])
@@ -119,7 +128,28 @@ class FrameLocalClient:
     def delete_gallery(self, gallery_id: str | int) -> dict:
         return self.post(f"/local/delete/gallery/{gallery_id}")
 
+    # ---- settings --------------------------------------------------------
+    def settings(self) -> dict:
+        return self.get("/local/settings")
+
+    def settings_schema(self) -> dict:
+        return self.get("/local/settings/schema")
+
+    def update_settings(self, values: dict) -> dict:
+        return self.post("/local/settings", data=values)
+
     # ---- actions ---------------------------------------------------------
+    def action(self, action: str, value: Any = None, value2: Any = None) -> dict:
+        data = {"do": action}
+        if value is not None:
+            data["value"] = value
+        if value2 is not None:
+            data["value2"] = value2
+        return self.post("/local/action", data=data)
+
+    def set_picture(self, path: str, timeout: int = 600) -> dict:
+        return self.post("/local/setpic", data={"path": path, "timeout": timeout})
+
     def change_gallery(self, gallery_id: str | int) -> dict:
         if not self.token:
             return self.get(f"/remote/control_command/change_gallery/{gallery_id}")

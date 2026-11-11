@@ -42,6 +42,9 @@ class RemoteApiClient:
     def summary_status(self) -> dict[str, Any]:
         return self.request("GET", "/status", timeout=15)
 
+    def list_devices(self) -> dict[str, Any]:
+        return self.request("GET", "/devices", timeout=30)
+
     def device_status(self, name: str) -> dict[str, Any]:
         return self.request("GET", f"/devices/{name}", timeout=15)
 
@@ -83,4 +86,77 @@ class RemoteApiClient:
             data=image_bytes,
             headers={"Content-Type": content_type},
             timeout=90,
+        )
+
+    def device_time(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/time", timeout=15)
+
+    def list_galleries(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/galleries", timeout=20)
+
+    def get_gallery(self, name: str, gallery_id: str | int) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/galleries/{gallery_id}", timeout=20)
+
+    def create_gallery(self, name: str, gallery_name: str) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/galleries", json={"name": gallery_name}, timeout=30)
+
+    def upload_gallery_item(
+        self,
+        name: str,
+        gallery_id: str | int,
+        image_bytes: bytes,
+        suffix: str = ".png",
+        title: Optional[str] = None,
+    ) -> dict[str, Any]:
+        content_type = "image/png" if suffix.lower() == ".png" else "image/jpeg"
+        params = {"title": title} if title else None
+        return self.request(
+            "POST",
+            f"/devices/{name}/galleries/{gallery_id}/items",
+            params=params,
+            data=image_bytes,
+            headers={"Content-Type": content_type},
+            timeout=90,
+        )
+
+    def show_gallery(self, name: str, gallery_id: str | int) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/galleries/{gallery_id}/show", timeout=30)
+
+    def show_item(self, name: str, item_id: str | int) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/items/{item_id}/show", timeout=30)
+
+    def delete_gallery(self, name: str, gallery_id: str | int) -> dict[str, Any]:
+        return self.request("DELETE", f"/devices/{name}/galleries/{gallery_id}", timeout=30)
+
+    def delete_item(self, name: str, item_id: str | int) -> dict[str, Any]:
+        return self.request("DELETE", f"/devices/{name}/items/{item_id}", timeout=30)
+
+    def set_picture(self, name: str, path: str, timeout: int = 600) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/devices/{name}/picture",
+            json={"path": path, "timeout": timeout},
+            timeout=max(60, timeout + 10),
+        )
+
+    def get_settings(self, name: str, include_sensitive: bool = False) -> dict[str, Any]:
+        return self.request(
+            "GET",
+            f"/devices/{name}/settings",
+            params={"include_sensitive": str(include_sensitive).lower()},
+            timeout=20,
+        )
+
+    def get_settings_schema(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/settings/schema", timeout=20)
+
+    def update_settings(self, name: str, values: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/settings", json=values, timeout=45)
+
+    def run_action(self, name: str, action: str, value: Any = None, value2: Any = None) -> dict[str, Any]:
+        return self.request(
+            "POST",
+            f"/devices/{name}/action",
+            json={"action": action, "value": value, "value2": value2},
+            timeout=60,
         )

@@ -42,8 +42,13 @@ def mcp_list_devices(
 ) -> dict[str, Any]:
     remote = _remote_client(api_url, api_token, verify_tls)
     if remote:
-        return remote.summary_status()
-    return _service(storage_dir=storage_dir, config=config).summary_status()
+        result = remote.summary_status()
+        result["devices"] = remote.list_devices().get("devices", [])
+        return result
+    service = _service(storage_dir=storage_dir, config=config)
+    result = service.summary_status()
+    result["devices"] = [service.device_status(device["name"]) for device in service.devices()]
+    return result
 
 
 def mcp_get_device_status(
@@ -182,6 +187,103 @@ def mcp_wake_device(name: str, **kw) -> dict[str, Any]:
     return _device_action("wake", name, **kw)
 
 
+def _feature(operation: str, name: str, storage_dir=None, config=None,
+             api_url=None, api_token=None, verify_tls=None, **kwargs) -> dict[str, Any]:
+    remote = _remote_client(api_url, api_token, verify_tls)
+    try:
+        if remote:
+            return getattr(remote, operation)(name, **kwargs)
+        return getattr(_service(storage_dir=storage_dir, config=config), operation)(name, **kwargs)
+    except KeyError as exc:
+        return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
+    except (TypeError, ValueError) as exc:
+        return {"status": "failed", "reason": "invalid_request", "error": str(exc)}
+
+
+def mcp_device_time(name: str, **kw) -> dict[str, Any]:
+    return _feature("device_time", name, **kw)
+
+
+def mcp_list_device_galleries(name: str, **kw) -> dict[str, Any]:
+    return _feature("list_galleries", name, **kw)
+
+
+def mcp_get_device_gallery(name: str, gallery_id: str, **kw) -> dict[str, Any]:
+    return _feature("get_gallery", name, gallery_id=gallery_id, **kw)
+
+
+def mcp_create_device_gallery(name: str, gallery_name: str, **kw) -> dict[str, Any]:
+    return _feature("create_gallery", name, gallery_name=gallery_name, **kw)
+
+
+def mcp_show_device_gallery(name: str, gallery_id: str, **kw) -> dict[str, Any]:
+    return _feature("show_gallery", name, gallery_id=gallery_id, **kw)
+
+
+def mcp_show_device_item(name: str, item_id: str, **kw) -> dict[str, Any]:
+    return _feature("show_item", name, item_id=item_id, **kw)
+
+
+def mcp_delete_device_gallery(name: str, gallery_id: str, **kw) -> dict[str, Any]:
+    return _feature("delete_gallery", name, gallery_id=gallery_id, **kw)
+
+
+def mcp_delete_device_item(name: str, item_id: str, **kw) -> dict[str, Any]:
+    return _feature("delete_item", name, item_id=item_id, **kw)
+
+
+def mcp_set_device_picture(name: str, path: str, timeout: int = 600, **kw) -> dict[str, Any]:
+    return _feature("set_picture", name, path=path, timeout=timeout, **kw)
+
+
+def mcp_get_device_settings(name: str, include_sensitive: bool = False, **kw) -> dict[str, Any]:
+    return _feature("get_settings", name, include_sensitive=include_sensitive, **kw)
+
+
+def mcp_get_device_settings_schema(name: str, **kw) -> dict[str, Any]:
+    return _feature("get_settings_schema", name, **kw)
+
+
+def mcp_update_device_settings(name: str, values: dict[str, Any], **kw) -> dict[str, Any]:
+    return _feature("update_settings", name, values=values, **kw)
+
+
+def mcp_run_device_action(name: str, action: str, value: Any = None, value2: Any = None, **kw) -> dict[str, Any]:
+    return _feature("run_action", name, action=action, value=value, value2=value2, **kw)
+
+
+def mcp_upload_device_gallery_item(
+    name: str,
+    gallery_id: str,
+    image_base64: str,
+    filename: str = "image.png",
+    title: Optional[str] = None,
+    storage_dir=None,
+    config=None,
+    api_url=None,
+    api_token=None,
+    verify_tls=None,
+) -> dict[str, Any]:
+    try:
+        image_bytes = base64.b64decode(image_base64, validate=True)
+    except Exception as exc:
+        return {"status": "failed", "reason": "image_base64_invalid", "error": str(exc)}
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png"}:
+        suffix = ".png"
+    remote = _remote_client(api_url, api_token, verify_tls)
+    try:
+        if remote:
+            return remote.upload_gallery_item(
+                name, gallery_id, image_bytes=image_bytes, suffix=suffix, title=title)
+        return _service(storage_dir=storage_dir, config=config).upload_gallery_item(
+            name, gallery_id, data=image_bytes, filename=suffix, title=title)
+    except KeyError as exc:
+        return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
+    except (TypeError, ValueError) as exc:
+        return {"status": "failed", "reason": "invalid_request", "error": str(exc)}
+
+
 def build_mcp_server(
     *,
     streamable_http_path: str = "/mcp",
@@ -253,6 +355,77 @@ def build_mcp_server(
     def wake_device(name: str) -> dict[str, Any]:
         """Wake the frame."""
         return mcp_wake_device(name)
+
+    @server.tool()
+    def get_device_time(name: str) -> dict[str, Any]:
+        """Get the frame's current epoch time."""
+        return mcp_device_time(name)
+
+    @server.tool()
+    def list_device_galleries(name: str) -> dict[str, Any]:
+        """List on-device galleries and item counts."""
+        return mcp_list_device_galleries(name)
+
+    @server.tool()
+    def get_device_gallery(name: str, gallery_id: str) -> dict[str, Any]:
+        """Get one on-device gallery and its items."""
+        return mcp_get_device_gallery(name, gallery_id)
+
+    @server.tool()
+    def create_device_gallery(name: str, gallery_name: str) -> dict[str, Any]:
+        """Create an on-device gallery."""
+        return mcp_create_device_gallery(name, gallery_name)
+
+    @server.tool()
+    def upload_device_gallery_item(name: str, gallery_id: str, image_base64: str,
+                                   filename: str = "image.png", title: Optional[str] = None) -> dict[str, Any]:
+        """Upload base64 image bytes into an on-device gallery."""
+        return mcp_upload_device_gallery_item(name, gallery_id, image_base64, filename, title)
+
+    @server.tool()
+    def show_device_gallery(name: str, gallery_id: str) -> dict[str, Any]:
+        """Make an on-device gallery current."""
+        return mcp_show_device_gallery(name, gallery_id)
+
+    @server.tool()
+    def show_device_item(name: str, item_id: str) -> dict[str, Any]:
+        """Display one on-device item."""
+        return mcp_show_device_item(name, item_id)
+
+    @server.tool()
+    def delete_device_gallery(name: str, gallery_id: str) -> dict[str, Any]:
+        """Delete an on-device gallery and its links; items are kept by the frame."""
+        return mcp_delete_device_gallery(name, gallery_id)
+
+    @server.tool()
+    def delete_device_item(name: str, item_id: str) -> dict[str, Any]:
+        """Delete an on-device item, its file, and links."""
+        return mcp_delete_device_item(name, item_id)
+
+    @server.tool()
+    def set_device_picture(name: str, path: str, timeout: int = 600) -> dict[str, Any]:
+        """Display a frame-local image path now; timeout 0 keeps it until replaced."""
+        return mcp_set_device_picture(name, path, timeout)
+
+    @server.tool()
+    def get_device_settings(name: str, include_sensitive: bool = False) -> dict[str, Any]:
+        """Read settings/hardware; credential-like values are redacted unless explicitly included."""
+        return mcp_get_device_settings(name, include_sensitive)
+
+    @server.tool()
+    def get_device_settings_schema(name: str) -> dict[str, Any]:
+        """Get settable frame columns and their types."""
+        return mcp_get_device_settings_schema(name)
+
+    @server.tool()
+    def update_device_settings(name: str, values: dict[str, Any]) -> dict[str, Any]:
+        """Write one or more frame settings, returning applied/rejected/unknown fields."""
+        return mcp_update_device_settings(name, values)
+
+    @server.tool()
+    def run_device_action(name: str, action: str, value: Any = None, value2: Any = None) -> dict[str, Any]:
+        """Run a frame hardware action; network, power, and input actions may be disruptive."""
+        return mcp_run_device_action(name, action, value, value2)
 
     return server
 

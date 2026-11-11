@@ -7,6 +7,8 @@ the loop.
 - **On-device API** — each frame is driven through the API it serves itself
   (`:8099`), authenticated with a per-device token. No DNS changes, no
   certificate, no man-in-the-middle.
+- **Full local control** — galleries/items, immediate pictures, device time,
+  settings/schema and hardware/network actions through REST and MCP.
 - **REST API** — token-protected, loopback by default.
 - **MCP server** — stdio or hosted streamable-HTTP, so coding agents can set
   images directly.

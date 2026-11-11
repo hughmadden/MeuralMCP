@@ -48,10 +48,25 @@ class McpServerTests(unittest.TestCase):
 
     def test_list_devices(self):
         result = mcp_list_devices(storage_dir=self.root, config=self.config)
-        self.assertEqual(result["devices_total"], 1)
         self.assertEqual(len(result["devices"]), 1)
         self.assertEqual(result["devices"][0]["name"], "canvas-1")
         self.assertNotIn("state", result["devices"][0])
+
+    def test_remote_summary_failure_is_preserved(self):
+        remote = Mock()
+        failure = {"status": "failed", "reason": "unauthorized"}
+        remote.summary_status.return_value = failure
+        with patch("meural_mcp.mcp_server._remote_client", return_value=remote):
+            self.assertEqual(mcp_list_devices(config=self.config), failure)
+        remote.list_devices.assert_not_called()
+
+    def test_remote_inventory_failure_is_preserved(self):
+        remote = Mock()
+        remote.summary_status.return_value = {"devices_total": 1}
+        failure = {"status": "failed", "reason": "upstream_unavailable"}
+        remote.list_devices.return_value = failure
+        with patch("meural_mcp.mcp_server._remote_client", return_value=remote):
+            self.assertEqual(mcp_list_devices(config=self.config), failure)
 
     def test_set_image_data_then_get(self):
         result = mcp_set_device_image_data(

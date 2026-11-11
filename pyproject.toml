@@ -1,6 +1,6 @@
 [project]
 name = "meural-mcp"
-version = "0.5.0"
+version = "0.5.1"
 description = "Local API, REST and MCP control for Meural Canvas frames"
 requires-python = ">=3.11"
 dependencies = [

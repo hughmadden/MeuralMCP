@@ -34,13 +34,13 @@ def _service(
 
 
 DEVICE_LIST_FIELDS = (
-    "name", "display_name", "enabled", "orientation", "local_ip",
-    "image", "gallery_id", "reachable", "frame", "current_gallery",
+    "name", "display_name", "enabled", "orientation", "local_ip", "image",
+    "gallery_id", "reachable", "frame", "current_gallery",
 )
 
 
 def _device_list_entry(device: dict[str, Any]) -> dict[str, Any]:
-    """Return the documented inventory fields, not bulky historical state."""
+    """Return inventory/current status without bulky historical state."""
     return {key: device.get(key) for key in DEVICE_LIST_FIELDS}
 
 
@@ -54,15 +54,20 @@ def mcp_list_devices(
     remote = _remote_client(api_url, api_token, verify_tls)
     if remote:
         result = remote.summary_status()
-        result["devices"] = [
-            _device_list_entry(device) for device in remote.list_devices().get("devices", [])
-        ]
+        if result.get("status") == "failed":
+            return result
+        inventory = remote.list_devices()
+        if inventory.get("status") == "failed":
+            return inventory
+        result["devices"] = [_device_list_entry(device) for device in inventory.get("devices", [])]
+        result["status"] = "pass"
         return result
     service = _service(storage_dir=storage_dir, config=config)
     result = service.summary_status()
     result["devices"] = [
         _device_list_entry(service.device_status(device["name"])) for device in service.devices()
     ]
+    result["status"] = "pass"
     return result
 
 
@@ -317,7 +322,7 @@ def build_mcp_server(
 
     @server.tool()
     def list_devices() -> dict[str, Any]:
-        """List all configured devices with names, display names, IPs, orientation, enabled state, reachability, and assigned image paths."""
+        """List configured devices with names, IPs, orientation, enabled state, reachability, images, and current galleries."""
         return mcp_list_devices()
 
     @server.tool()

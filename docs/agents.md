@@ -15,7 +15,8 @@ Served over stdio (`meural-mcp mcp`) or as a hosted streamable-HTTP endpoint at
 ### `list_devices`
 
 No arguments. Returns every configured device with name, display name, IP,
-orientation, enabled flag, current reachability, and the assigned image path.
+orientation, enabled flag, current reachability, assigned image, and current
+gallery. Full historical state is available through `get_device_status`.
 
 ### `get_device_status(name)`
 

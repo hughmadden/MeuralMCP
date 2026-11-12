@@ -11,6 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from . import __version__
 
 from .manager import ManagerService, auth_token_valid, load_config
 from .video import (HostSpool, MediaKind, Presentation, StopPresentation, VideoTransferError,
@@ -174,6 +175,7 @@ def create_app() -> FastAPI:
             yield
 
     api_app = FastAPI(
+        version=__version__,
         title="MeuralMCP",
         description="Local Meural frame control. Agent guide: /llms.txt (full: /agents.md). "
                     "All routes except /healthz, /llms.txt and /agents.md need a bearer token.",

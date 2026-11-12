@@ -62,3 +62,7 @@ active files/galleries returns409 until explicitly stopped; gallery deletion
 removes its files. Fullscreen restores the original gallery/item on completion,
 error or stop; overlay leaves it running underneath. See docs/agents.md for all
 13 video tools, routes, exact argument shapes and result/error envelopes.
+
+Prepared fullscreen streams accept HTTP(S)/HLS and RTSP(S) media URLs. The native
+decoder must support the actual stream codec/profile; protocol availability is
+not playback proof. Transparent prepared-alpha streams require HTTP(S).

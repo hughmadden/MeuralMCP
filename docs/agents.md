@@ -169,8 +169,8 @@ state. Deletions return `deleted` with the removed id.
 
 ### `play_device_video(name, url=null, file_id=null, gallery_id=null, repeat=1, presentation="auto")`
 
-Supply exactly one nonempty `url`, `file_id` or `gallery_id`. URLs must use HTTP
-or HTTPS. `repeat=1` plays once (the default), `repeat=0` repeats forever and
+Supply exactly one nonempty `url`, `file_id` or `gallery_id`. Fullscreen URLs accept HTTP(S)/HLS or RTSP(S) media streams;
+transparent prepared-alpha URLs require HTTP(S). `repeat=1` plays once (the default), `repeat=0` repeats forever and
 `repeat=N` plays N full cycles. A gallery cycle includes its entire playlist.
 For truly live sources, playback lasts until end-of-stream or stop and repeat is
 irrelevant. `presentation` is `fullscreen`, `overlay` or `auto`.
@@ -290,3 +290,7 @@ exceeds the MCP limit fails with `invalid_request`; use the binary REST route.
 - `set_device_image_data` fails if the image cannot be decoded or the orientation is
   wrong; nothing is stored on failure.
 - Only one image per device is held. Setting another replaces it.
+
+Prepared fullscreen streams accept HTTP(S)/HLS and RTSP(S) media URLs. The native
+decoder must support the actual stream codec/profile; protocol availability is
+not playback proof. Transparent prepared-alpha streams require HTTP(S).

@@ -615,7 +615,7 @@ def build_mcp_server(
     def play_device_video(name: str, url: str | None = None, file_id: str | None = None,
                           gallery_id: str | None = None, repeat: int = 1,
                           presentation: Presentation = "auto") -> dict[str, Any]:
-        """Play exactly one prepared file/gallery or HTTP(S) source. Repeat: 1 once, 0 forever, N cycles."""
+        """Play exactly one prepared file/gallery or HTTP(S)/RTSP(S) source (alpha: HTTP(S)). Repeat: 1 once, 0 forever, N cycles."""
         return mcp_play_device_video(name, url, file_id, gallery_id, repeat, presentation)
 
     @server.tool()

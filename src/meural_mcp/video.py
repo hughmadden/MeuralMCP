@@ -229,9 +229,15 @@ def playback_payload(*, url: str | None = None, file_id: str | None = None,
                                  for value in provided.values()):
         raise ValueError("provide exactly one nonempty url, file_id or gallery_id")
     if url is not None:
-        parsed = urlsplit(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("url must be an absolute HTTP or HTTPS URL")
+        try:
+            parsed = urlsplit(url)
+            allowed = {"http", "https"} if presentation == "overlay" else {"http", "https", "rtsp", "rtsps"}
+            valid = (parsed.scheme in allowed and parsed.hostname and parsed.port != 0
+                     and not any(ord(c) < 32 or ord(c) == 127 for c in url))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("expected a prepared HTTP(S) or RTSP(S) URL; overlays require HTTP(S)")
     return {**provided, "repeat": repeat, "presentation": presentation}
 
 

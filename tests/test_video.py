@@ -79,6 +79,18 @@ class VideoManagerTests(unittest.TestCase):
         self.manager.play_video(NAME, file_id=FILE)
         self.frame.play_video.assert_called_with(file_id=FILE, repeat=1, presentation="auto")
 
+    def test_stream_protocol_validation_matches_native_layers(self):
+        for scheme in ("http", "https", "rtsp", "rtsps"):
+            url = scheme + "://user:secret@192.0.2.1/live"
+            self.manager.play_video(NAME, url=url, presentation="fullscreen")
+            self.frame.play_video.assert_called_with(url=url, repeat=1, presentation="fullscreen")
+        for url in ("http://192.0.2.1:bad/live", "http://192.0.2.1:0/live", "http://192.0.2.1/\nprivate"):
+            with self.assertRaises(ValueError):
+                self.manager.play_video(NAME, url=url)
+        for scheme in ("rtsp", "rtsps"):
+            with self.assertRaises(ValueError):
+                self.manager.play_video(NAME, url=scheme+"://192.0.2.1/live", presentation="overlay")
+
     def test_invalid_play_does_not_reach_frame(self):
         invalid = ({}, {"file_id": FILE, "gallery_id": GALLERY}, {"file_id": ""},
                    {"url": "file:///tmp/video"}, {"file_id": FILE, "repeat": -1},

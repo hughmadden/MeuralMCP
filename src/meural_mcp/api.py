@@ -270,7 +270,7 @@ def register_routes(api_app: FastAPI) -> None:
 
     @api_app.post("/devices/{name}/video", dependencies=[Depends(authenticated)])
     def play_device_video(name: str, payload: VideoPlay):
-        """Play a prepared file, gallery or HTTP(S) source; repeat counts full cycles."""
+        """Play prepared files/galleries or HTTP(S)/RTSP(S) streams; alpha uses HTTP(S)."""
         return video_response(service().play_video, name, **payload.model_dump())
 
     @api_app.post("/devices/{name}/video/stop", dependencies=[Depends(authenticated)])

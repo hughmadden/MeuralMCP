@@ -1,7 +1,6 @@
 # MeuralMCP
 
 Local control of Netgear Meural Canvas frames: CLI, REST API and MCP server.
-Each frame is driven through its own MeuralDeviceControl API on :8099.
 
 This file is a map for agents. The method surface is docs/agents.md — an agent
 using the MCP tools does not need the operator material.
@@ -10,7 +9,7 @@ using the MCP tools does not need the operator material.
 
 - docs/agents.md — MCP tools and REST routes, request/result shapes. Start here.
 - README.md — what the project is, quick start.
-- docs/deploy.md — operator work: per-frame tokens, install, service verification.
+- docs/deploy.md — operator installation, configuration and service verification.
 - docs/sleep-schedules.md — per-device sleep windows.
 
 ## Concepts
@@ -28,7 +27,12 @@ get_device_time, list_device_galleries, get_device_gallery,
 create_device_gallery, upload_device_gallery_item, show_device_gallery,
 show_device_item, delete_device_gallery, delete_device_item, set_device_picture,
 get_device_settings, get_device_settings_schema, update_device_settings,
-run_device_action.
+run_device_action,
+get_device_video, get_device_video_storage, list_device_video_galleries,
+create_device_video_gallery, get_device_video_gallery,
+delete_device_video_gallery, list_device_video_files, get_device_video_file,
+delete_device_video_file, upload_device_video_file, download_device_video_file,
+play_device_video, stop_device_video.
 
 ## Result shape
 
@@ -40,3 +44,21 @@ identical_times, unknown_timezone, on_device_api_required.
 Settings reads redact credential-like values unless include_sensitive=true.
 Immediate picture paths are frame-local. Hardware/network actions and deletes can
 be disruptive; see docs/agents.md for exact arguments and REST equivalents.
+
+## Video
+
+Inspect get_device_video for capabilities, fullscreen/overlay layers and storage.
+Prepared videos/galleries persist until explicitly deleted. Prepare MP4 H.264
+Baseline/YUV420P at the desired size/orientation before upload; no conversion is
+performed by the service. Transparent overlays use prepared native-sized `.mvo`
+bundles (application/vnd.meural.overlay): MVOZ0001 compressed premultiplied BGRA
+with per-pixel alpha. All preparation happens upstream; the frame decodes only.
+play_device_video takes exactly one url/file_id/gallery_id; repeat=1 once
+(default),0 forever,N full playlist cycles. presentation=auto/fullscreen/overlay.
+stop_device_video presentation=all(default)/fullscreen/overlay.
+MCP transfer limit:16MiB decoded; prefer raw binary REST upload/download for larger
+files. Binary uploads require Content-Length and available storage. Deleting
+active files/galleries returns409 until explicitly stopped; gallery deletion
+removes its files. Fullscreen restores the original gallery/item on completion,
+error or stop; overlay leaves it running underneath. See docs/agents.md for all
+13 video tools, routes, exact argument shapes and result/error envelopes.

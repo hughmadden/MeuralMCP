@@ -83,6 +83,17 @@ Nothing is proxied to Netgear.
 With a token the work happens over the frame's own API (`:8099`); the frame
 holds the file itself.
 
+## Prepared video and streams
+
+The video tools and `/devices/{name}/video` routes support persistent video
+libraries, file/gallery playback, HTTP(S) streams, repeat counts and independent
+fullscreen/overlay layers. Transparent overlays use prepared native `.mvo` bundles
+with per-pixel alpha; all media preparation happens upstream and the frame decodes
+only. Existing image tools keep their behavior. See
+[the agent reference](docs/agents.md#prepared-video-and-streams) for the complete
+surface and [deployment notes](docs/deploy.md#video-storage-and-preparation) for
+media preparation and temporary storage requirements.
+
 ## Sleep schedules
 
 Optional per-device suspend windows, set over MCP (`set_device_schedule`) or

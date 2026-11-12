@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
-from .local import FrameLocalClient
+import requests
+
+from .local import FrameLocalClient, FrameLocalError
+from .video import (VideoTransferError, playback_payload, resource_id,
+                    upload_options, validate_presentation)
 
 
 def now_iso() -> str:
@@ -282,6 +286,90 @@ class ManagerService:
                 return response
             return {**response, "status": "pass"}
         return {"status": "pass", result_key: response}
+
+    # ---- prepared video: forwarding only, never conversion ----------------
+    def _video_call(self, name: str, call: Callable[[FrameLocalClient], Any],
+                    *, timeout: int = 30) -> dict[str, Any]:
+        try:
+            return self._on_device_call(name, call, timeout=timeout)
+        except FrameLocalError as exc:
+            try:
+                details = json.loads(exc.body)
+            except ValueError:
+                details = {}
+            if not isinstance(details, dict):
+                details = {}
+            return {**details, "status": "failed", "is_ok": False,
+                    "reason": details.get("reason", "on_device_api_failed"),
+                    "http_status": exc.status}
+        except VideoTransferError as exc:
+            return {"status": "failed", "is_ok": False, "reason": "transfer_failed",
+                    "error": str(exc), "http_status": exc.http_status}
+        except requests.RequestException:
+            # Request exceptions may include credential-bearing URLs.
+            return {"status": "failed", "is_ok": False,
+                    "reason": "device_unavailable", "http_status": 502}
+
+    def video_status(self, name: str) -> dict[str, Any]:
+        return self._video_call(name, lambda client: client.video_status())
+
+    def video_storage(self, name: str) -> dict[str, Any]:
+        return self._video_call(name, lambda client: client.video_storage())
+
+    def list_video_galleries(self, name: str) -> dict[str, Any]:
+        return self._video_call(name, lambda client: client.list_video_galleries())
+
+    def create_video_gallery(self, name: str, gallery_name: str) -> dict[str, Any]:
+        if not isinstance(gallery_name, str) or not gallery_name.strip():
+            raise ValueError("gallery_name must be nonempty")
+        return self._video_call(name, lambda client: client.create_video_gallery(gallery_name))
+
+    def get_video_gallery(self, name: str, gallery_id: str) -> dict[str, Any]:
+        resource_id(gallery_id)
+        return self._video_call(name, lambda client: client.get_video_gallery(gallery_id))
+
+    def delete_video_gallery(self, name: str, gallery_id: str) -> dict[str, Any]:
+        resource_id(gallery_id)
+        return self._video_call(name, lambda client: client.delete_video_gallery(gallery_id))
+
+    def list_video_files(self, name: str) -> dict[str, Any]:
+        return self._video_call(name, lambda client: client.list_video_files())
+
+    def get_video_file(self, name: str, file_id: str) -> dict[str, Any]:
+        resource_id(file_id)
+        return self._video_call(name, lambda client: client.get_video_file(file_id))
+
+    def delete_video_file(self, name: str, file_id: str) -> dict[str, Any]:
+        resource_id(file_id)
+        return self._video_call(name, lambda client: client.delete_video_file(file_id))
+
+    def upload_video_file(self, name: str, gallery_id: str, source: Path,
+                          filename: str = "video.mp4", kind: str = "video",
+                          title: str | None = None, play: bool = False,
+                          repeat: int = 1, presentation: str = "auto") -> dict[str, Any]:
+        resource_id(gallery_id)
+        options = upload_options(filename, kind, title, play, repeat, presentation)
+        if not source.is_file() or not source.stat().st_size:
+            raise ValueError("prepared media must be a nonempty file")
+        return self._video_call(name, lambda client: client.upload_video_file(
+            gallery_id, source, **options), timeout=300)
+
+    def download_video_file(self, name: str, file_id: str, destination: Path,
+                            max_bytes: int | None = None) -> dict[str, Any]:
+        resource_id(file_id)
+        return self._video_call(name, lambda client: client.download_video_file(
+            file_id, destination, max_bytes=max_bytes), timeout=300)
+
+    def play_video(self, name: str, url: str | None = None, file_id: str | None = None,
+                   gallery_id: str | None = None, repeat: int = 1,
+                   presentation: str = "auto") -> dict[str, Any]:
+        payload = playback_payload(url=url, file_id=file_id, gallery_id=gallery_id,
+                                   repeat=repeat, presentation=presentation)
+        return self._video_call(name, lambda client: client.play_video(**payload))
+
+    def stop_video(self, name: str, presentation: str = "all") -> dict[str, Any]:
+        validate_presentation(presentation, stop=True)
+        return self._video_call(name, lambda client: client.stop_video(presentation))
 
     def device_time(self, name: str) -> dict[str, Any]:
         return self._on_device_call(name, lambda client: client.time(), timeout=15)

@@ -6,6 +6,9 @@ from typing import Any, Callable, Optional
 
 from .api_client import RemoteApiClient, verify_tls_from_value
 from .manager import ManagerService
+from .video import (HostSpool, MCP_VIDEO_MAX_BYTES, MediaKind, Presentation, StopPresentation,
+                    VideoTransferError, new_spool_path, playback_payload,
+                    transfer_failure, upload_options)
 
 
 def _remote_client(
@@ -216,6 +219,8 @@ def _feature(operation: str, name: str, storage_dir=None, config=None,
         return getattr(_service(storage_dir=storage_dir, config=config), operation)(name, **kwargs)
     except KeyError as exc:
         return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
+    except VideoTransferError as exc:
+        return transfer_failure(exc)
     except (TypeError, ValueError) as exc:
         return {"status": "failed", "reason": "invalid_request", "error": str(exc)}
 
@@ -302,6 +307,106 @@ def mcp_upload_device_gallery_item(
         return {"status": "failed", "reason": "device_not_found", "error": str(exc)}
     except (TypeError, ValueError) as exc:
         return {"status": "failed", "reason": "invalid_request", "error": str(exc)}
+
+
+def mcp_get_device_video(name: str, **kw) -> dict[str, Any]:
+    return _feature("video_status", name, **kw)
+
+
+def mcp_get_device_video_storage(name: str, **kw) -> dict[str, Any]:
+    return _feature("video_storage", name, **kw)
+
+
+def mcp_list_device_video_galleries(name: str, **kw) -> dict[str, Any]:
+    return _feature("list_video_galleries", name, **kw)
+
+
+def mcp_create_device_video_gallery(name: str, gallery_name: str, **kw) -> dict[str, Any]:
+    return _feature("create_video_gallery", name, gallery_name=gallery_name, **kw)
+
+
+def mcp_get_device_video_gallery(name: str, gallery_id: str, **kw) -> dict[str, Any]:
+    return _feature("get_video_gallery", name, gallery_id=gallery_id, **kw)
+
+
+def mcp_delete_device_video_gallery(name: str, gallery_id: str, **kw) -> dict[str, Any]:
+    return _feature("delete_video_gallery", name, gallery_id=gallery_id, **kw)
+
+
+def mcp_list_device_video_files(name: str, **kw) -> dict[str, Any]:
+    return _feature("list_video_files", name, **kw)
+
+
+def mcp_get_device_video_file(name: str, file_id: str, **kw) -> dict[str, Any]:
+    return _feature("get_video_file", name, file_id=file_id, **kw)
+
+
+def mcp_delete_device_video_file(name: str, file_id: str, **kw) -> dict[str, Any]:
+    return _feature("delete_video_file", name, file_id=file_id, **kw)
+
+
+def mcp_play_device_video(name: str, url: str | None = None, file_id: str | None = None,
+                          gallery_id: str | None = None, repeat: int = 1,
+                          presentation: str = "auto", **kw) -> dict[str, Any]:
+    try:
+        payload = playback_payload(url=url, file_id=file_id, gallery_id=gallery_id,
+                                   repeat=repeat, presentation=presentation)
+    except ValueError as exc:
+        return {"status": "failed", "reason": "invalid_request", "error": str(exc)}
+    return _feature("play_video", name, **payload, **kw)
+
+
+def mcp_stop_device_video(name: str, presentation: str = "all", **kw) -> dict[str, Any]:
+    return _feature("stop_video", name, presentation=presentation, **kw)
+
+
+def mcp_upload_device_video_file(name: str, gallery_id: str, video_base64: str,
+                                  filename: str = "video.mp4", kind: str = "video",
+                                  title: str | None = None, play: bool = False,
+                                  repeat: int = 1, presentation: str = "auto", **kw) -> dict[str, Any]:
+    # Bound the encoded input before allocating decoded bytes.
+    if not isinstance(video_base64, str):
+        return {"status": "failed", "reason": "video_base64_invalid"}
+    if len(video_base64) > 4 * ((MCP_VIDEO_MAX_BYTES + 2) // 3):
+        return {"status": "failed", "reason": "video_too_large", "max_bytes": MCP_VIDEO_MAX_BYTES,
+                "error": "use binary REST upload for larger prepared files"}
+    try:
+        data = base64.b64decode(video_base64, validate=True)
+    except (ValueError, TypeError) as exc:
+        return {"status": "failed", "reason": "video_base64_invalid", "error": str(exc)}
+    if not data or len(data) > MCP_VIDEO_MAX_BYTES:
+        return {"status": "failed", "reason": "video_size_invalid", "max_bytes": MCP_VIDEO_MAX_BYTES}
+    try:
+        options = upload_options(filename, kind, title, play, repeat, presentation)
+    except ValueError as exc:
+        return {"status": "failed", "reason": "invalid_request", "error": str(exc)}
+    source = None
+    try:
+        with HostSpool(len(data), prefix="meural-mcp-video-") as media:
+            source = media.path
+            media.write(data)
+        return _feature("upload_video_file", name, gallery_id=gallery_id, source=source, **options, **kw)
+    except VideoTransferError as exc:
+        return transfer_failure(exc)
+    finally:
+        if source is not None:
+            source.unlink(missing_ok=True)
+
+
+def mcp_download_device_video_file(name: str, file_id: str, **kw) -> dict[str, Any]:
+    destination = None
+    try:
+        destination = new_spool_path("meural-mcp-video-")
+        result = _feature("download_video_file", name, file_id=file_id,
+                          destination=destination, max_bytes=MCP_VIDEO_MAX_BYTES, **kw)
+        if result.get("status") == "pass":
+            result["video_base64"] = base64.b64encode(destination.read_bytes()).decode("ascii")
+        return result
+    except VideoTransferError as exc:
+        return transfer_failure(exc)
+    finally:
+        if destination is not None:
+            destination.unlink(missing_ok=True)
 
 
 def build_mcp_server(
@@ -446,6 +551,77 @@ def build_mcp_server(
     def run_device_action(name: str, action: str, value: Any = None, value2: Any = None) -> dict[str, Any]:
         """Run a frame hardware action; network, power, and input actions may be disruptive."""
         return mcp_run_device_action(name, action, value, value2)
+
+    @server.tool()
+    def get_device_video(name: str) -> dict[str, Any]:
+        """Get video capabilities, current fullscreen/overlay layers and disk storage."""
+        return mcp_get_device_video(name)
+
+    @server.tool()
+    def get_device_video_storage(name: str) -> dict[str, Any]:
+        """Get free, reserved and available upload bytes for persistent video files."""
+        return mcp_get_device_video_storage(name)
+
+    @server.tool()
+    def list_device_video_galleries(name: str) -> dict[str, Any]:
+        """List persistent video galleries."""
+        return mcp_list_device_video_galleries(name)
+
+    @server.tool()
+    def create_device_video_gallery(name: str, gallery_name: str) -> dict[str, Any]:
+        """Create a persistent gallery for prepared media."""
+        return mcp_create_device_video_gallery(name, gallery_name)
+
+    @server.tool()
+    def get_device_video_gallery(name: str, gallery_id: str) -> dict[str, Any]:
+        """Get video gallery metadata and its owned files."""
+        return mcp_get_device_video_gallery(name, gallery_id)
+
+    @server.tool()
+    def delete_device_video_gallery(name: str, gallery_id: str) -> dict[str, Any]:
+        """Delete a video gallery and its files; stop active playback first (409 if in use)."""
+        return mcp_delete_device_video_gallery(name, gallery_id)
+
+    @server.tool()
+    def list_device_video_files(name: str) -> dict[str, Any]:
+        """List persistent prepared-media file metadata."""
+        return mcp_list_device_video_files(name)
+
+    @server.tool()
+    def get_device_video_file(name: str, file_id: str) -> dict[str, Any]:
+        """Get one prepared-media file's metadata."""
+        return mcp_get_device_video_file(name, file_id)
+
+    @server.tool()
+    def delete_device_video_file(name: str, file_id: str) -> dict[str, Any]:
+        """Delete a prepared-media file; stop active playback first (409 if in use)."""
+        return mcp_delete_device_video_file(name, file_id)
+
+    @server.tool()
+    def upload_device_video_file(name: str, gallery_id: str, video_base64: str,
+                                  filename: str = "video.mp4", kind: MediaKind = "video",
+                                  title: str | None = None, play: bool = False,
+                                  repeat: int = 1, presentation: Presentation = "auto") -> dict[str, Any]:
+        """Upload prepared bytes (16 MiB maximum); prefer binary REST for larger files. No conversion."""
+        return mcp_upload_device_video_file(name, gallery_id, video_base64, filename, kind,
+                                           title, play, repeat, presentation)
+
+    @server.tool()
+    def download_device_video_file(name: str, file_id: str) -> dict[str, Any]:
+        """Download prepared bytes as base64 (16 MiB maximum); use binary REST for larger files."""
+        return mcp_download_device_video_file(name, file_id)
+
+    @server.tool()
+    def play_device_video(name: str, url: str | None = None, file_id: str | None = None,
+                          gallery_id: str | None = None, repeat: int = 1,
+                          presentation: Presentation = "auto") -> dict[str, Any]:
+        """Play exactly one prepared file/gallery or HTTP(S) source. Repeat: 1 once, 0 forever, N cycles."""
+        return mcp_play_device_video(name, url, file_id, gallery_id, repeat, presentation)
+
+    @server.tool()
+    def stop_device_video(name: str, presentation: StopPresentation = "all") -> dict[str, Any]:
+        """Stop all video or just fullscreen/overlay; fullscreen restores the original gallery/item."""
+        return mcp_stop_device_video(name, presentation)
 
     return server
 

@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from .video import copy_video_download, resource_id
+
 DEVICE_PORT = 8099
 
 
@@ -14,6 +16,7 @@ class FrameLocalError(RuntimeError):
         if secret:
             url = url.replace(secret, "<redacted>")
             body = body.replace(secret, "<redacted>")
+        self.body = body
         super().__init__("%s -> %s %s" % (url, status, body[:200]))
 
 
@@ -144,3 +147,62 @@ class FrameLocalClient:
 
     def wake(self) -> dict:
         return self.post("/local/action", data={"do": "resume"})
+
+    # ---- prepared video --------------------------------------------------
+    def video_status(self) -> dict:
+        return self.get("/local/video")
+
+    def video_storage(self) -> dict:
+        return self.get("/local/video/storage")
+
+    def list_video_galleries(self) -> dict:
+        return self.get("/local/video/galleries")
+
+    def create_video_gallery(self, gallery_name: str) -> dict:
+        return self.post("/local/video/galleries", data={"name": gallery_name})
+
+    def get_video_gallery(self, gallery_id: str) -> dict:
+        return self.get(f"/local/video/galleries/{resource_id(gallery_id)}")
+
+    def delete_video_gallery(self, gallery_id: str) -> dict:
+        return self._video_delete(f"/local/video/galleries/{resource_id(gallery_id)}")
+
+    def list_video_files(self) -> dict:
+        return self.get("/local/video/files")
+
+    def get_video_file(self, file_id: str) -> dict:
+        return self.get(f"/local/video/files/{resource_id(file_id)}")
+
+    def delete_video_file(self, file_id: str) -> dict:
+        return self._video_delete(f"/local/video/files/{resource_id(file_id)}")
+
+    def _video_delete(self, path: str) -> dict:
+        response = requests.delete(f"{self.base_url}{path}", timeout=self.timeout,
+                                   params=self._params())
+        self._check(response)
+        return response.json()
+
+    def upload_video_file(self, gallery_id: str, source: Path, **options) -> dict:
+        # A file handle lets requests stream rather than copy the entire upload.
+        params = {key: str(value).lower() if type(value) is bool else value
+                  for key, value in options.items() if value is not None}
+        with source.open("rb") as media:
+            response = requests.post(
+                f"{self.base_url}/local/video/galleries/{resource_id(gallery_id)}/files",
+                data=media, params=self._params(params),
+                headers={"Content-Type": "application/octet-stream"}, timeout=300)
+        self._check(response)
+        return response.json()
+
+    def download_video_file(self, file_id: str, destination: Path,
+                            max_bytes: int | None = None) -> dict:
+        with requests.get(f"{self.base_url}/local/video/files/{resource_id(file_id)}/data",
+                          params=self._params(), timeout=300, stream=True) as response:
+            self._check(response)
+            return copy_video_download(response, destination, max_bytes)
+
+    def play_video(self, **payload) -> dict:
+        return self.post("/local/video", data=payload, timeout=30)
+
+    def stop_video(self, presentation: str = "all") -> dict:
+        return self.post("/local/video/stop", data={"presentation": presentation}, timeout=30)

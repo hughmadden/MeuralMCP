@@ -3,6 +3,9 @@ from typing import Any, Optional
 
 import requests
 
+from .video import (copy_video_download, playback_payload, resource_id,
+                    upload_options, validate_presentation)
+
 
 def verify_tls_from_value(value: Optional[str]) -> bool:
     if value is None:
@@ -37,6 +40,8 @@ class RemoteApiClient:
             data = {"status": "failed", "error": response.text}
         if response.status_code >= 400 and isinstance(data, dict) and "status" not in data:
             data["status"] = "failed"
+        if response.status_code >= 400 and isinstance(data, dict):
+            data["http_status"] = response.status_code
         return data
 
     def summary_status(self) -> dict[str, Any]:
@@ -160,3 +165,65 @@ class RemoteApiClient:
             json={"action": action, "value": value, "value2": value2},
             timeout=60,
         )
+
+    # ---- prepared video --------------------------------------------------
+    def video_status(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/video")
+
+    def video_storage(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/video/storage")
+
+    def list_video_galleries(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/video/galleries")
+
+    def create_video_gallery(self, name: str, gallery_name: str) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/video/galleries", json={"name": gallery_name})
+
+    def get_video_gallery(self, name: str, gallery_id: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/video/galleries/{resource_id(gallery_id)}")
+
+    def delete_video_gallery(self, name: str, gallery_id: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/devices/{name}/video/galleries/{resource_id(gallery_id)}")
+
+    def list_video_files(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/video/files")
+
+    def get_video_file(self, name: str, file_id: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/video/files/{resource_id(file_id)}")
+
+    def delete_video_file(self, name: str, file_id: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/devices/{name}/video/files/{resource_id(file_id)}")
+
+    def play_video(self, name: str, url: str | None = None, file_id: str | None = None,
+                   gallery_id: str | None = None, repeat: int = 1,
+                   presentation: str = "auto") -> dict[str, Any]:
+        payload = playback_payload(url=url, file_id=file_id, gallery_id=gallery_id,
+                                   repeat=repeat, presentation=presentation)
+        return self.request("POST", f"/devices/{name}/video", json=payload)
+
+    def stop_video(self, name: str, presentation: str = "all") -> dict[str, Any]:
+        validate_presentation(presentation, stop=True)
+        return self.request("POST", f"/devices/{name}/video/stop", json={"presentation": presentation})
+
+    def upload_video_file(self, name: str, gallery_id: str, source: Path,
+                          filename: str = "video.mp4", kind: str = "video",
+                          title: str | None = None, play: bool = False,
+                          repeat: int = 1, presentation: str = "auto") -> dict[str, Any]:
+        params = upload_options(filename, kind, title, play, repeat, presentation)
+        with source.open("rb") as media:
+            return self.request("POST", f"/devices/{name}/video/galleries/{resource_id(gallery_id)}/files",
+                                data=media, params=params, timeout=300,
+                                headers={"Content-Type": "application/octet-stream"})
+
+    def download_video_file(self, name: str, file_id: str, destination: Path,
+                            max_bytes: int | None = None) -> dict[str, Any]:
+        with requests.get(f"{self.base_url}/devices/{name}/video/files/{resource_id(file_id)}/data",
+                          headers=self._headers(), verify=self.verify_tls,
+                          timeout=300, stream=True) as response:
+            if response.status_code >= 400:
+                try:
+                    result = response.json()
+                except ValueError:
+                    result = {"reason": "download_failed"}
+                return {**result, "status": "failed", "http_status": response.status_code}
+            return {"status": "pass", **copy_video_download(response, destination, max_bytes)}

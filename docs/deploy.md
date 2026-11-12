@@ -113,3 +113,59 @@ Verify without changing the displayed image:
 4. Use a temporary gallery to verify create/upload/read/delete, then remove it.
 5. Publish the stored image and confirm the frame reports the expected gallery
    and current item.
+
+## Video storage and preparation
+
+The frame must run a MeuralDeviceControl release implementing `/local/video`,
+persistent video galleries/files, storage reporting, repeat counts and layered
+playback. Check capabilities before using a layer. The host forwards prepared
+media, using file handles to send raw binary bodies to the frame; it never asks
+the frame to encode, resize or rotate media. Prepare MP4 H.264 Baseline/YUV420P
+on a suitable host at the intended orientation and display size.
+
+Transparent overlays use native `.mvo` bundles, media type
+`application/vnd.meural.overlay`. The `MVOZ0001` format contains compressed
+premultiplied BGRA frames at the native canvas dimensions, preserving per-pixel
+alpha while the native gallery continues underneath. Prepare them upstream with
+[`tools/prepare_media.py` in MeuralDeviceControl](https://github.com/hughmadden/MeuralDeviceControl/blob/main/tools/prepare_media.py):
+
+```sh
+python3 /path/to/MeuralDeviceControl/tools/prepare_media.py overlay \
+  rgba-frames/ overlay.mvo --width 1080 --height 1920
+```
+
+Use the actual canvas dimensions reported by capabilities; the values above are
+an example. Upload the resulting bundle with `filename=overlay.mvo` and
+`kind=overlay`. Binary REST transport still uses `application/octet-stream`.
+The service forwards the bundle unchanged. Encoding, resizing, orientation and
+alpha preparation happen on the host; the frame only decodes and displays it.
+
+REST upload spools request chunks to temporary host storage, checks required
+Content-Length against the frame's available-upload bytes and host free space,
+and cleans the spool on success or failure. A 64 MiB reserve is retained on the
+host temporary filesystem. REST downloads also spool with capacity checks and
+remove their temporary file after response delivery. Set the service's TMPDIR
+to a filesystem with room for the largest expected transfer. REST uploads, MCP
+uploads and downloads share disk admission and bounded writes. Known-length
+transfers reserve their remaining bytes; written bytes count through actual disk
+usage. Download spools stay on disk until response completion or disconnect.
+
+Run one API worker/process per temporary filesystem: spool reservations and their
+lock are process-local. Concurrent transfers within that process share admission;
+multiple worker processes or service instances do not share reservations and can
+consume the reserve. No fixed REST media-size cap is imposed. Each frame retains
+its own disk reserve and rechecks storage when receiving bytes.
+
+MCP base64 upload/download is limited to 16 MiB decoded bytes. Use the binary
+REST routes for larger media and configure proxy request-size/time limits to
+match expected media. Transfers use a 300-second frame HTTP timeout.
+`repeat=1` plays once, `0` repeats indefinitely and `N` counts complete playlist
+cycles. Fullscreen completion/error/stop restores the original native gallery
+and item; overlay leaves the native gallery alive beneath it. Stop the relevant
+layer explicitly before deleting active content (409); gallery deletion also
+removes its owned media. No automatic destructive stop is performed.
+
+Verify status, storage, persistent gallery create/upload/details/download/delete,
+file/gallery/URL playback, repeat counts and stop-by-layer using prepared test
+media. Confirm the physical fullscreen restore and overlay behavior on hardware;
+unit tests only verify forwarding contracts and transfer/error handling.

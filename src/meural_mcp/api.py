@@ -6,10 +6,16 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from starlette.concurrency import run_in_threadpool
+
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .manager import ManagerService, auth_token_valid, load_config
+from .video import (HostSpool, MediaKind, Presentation, StopPresentation, VideoTransferError,
+                    new_spool_path, playback_payload, spool_available_bytes,
+                    transfer_failure, upload_options)
 from .mcp_server import build_mcp_server
 
 
@@ -95,6 +101,57 @@ def feature_response(call: Callable, *args) -> Response:
         raise HTTPException(status_code=422, detail=str(exc))
     status = 200 if result.get("status") in {"pass", "partial"} else 422
     return Response(json.dumps(result), status_code=status, media_type="application/json")
+
+
+class VideoGalleryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+
+
+class VideoPlay(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str | None = None
+    file_id: str | None = None
+    gallery_id: str | None = None
+    repeat: StrictInt = Field(default=1, ge=0, description="Total cycles; 0 repeats forever")
+    presentation: Presentation = "auto"
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        playback_payload(**self.model_dump())
+        return self
+
+
+class VideoStop(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    presentation: StopPresentation = "all"
+
+
+def video_result(call: Callable, *args, **kwargs) -> dict:
+    try:
+        return call(*args, **kwargs)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="device not found")
+    except VideoTransferError as exc:
+        return transfer_failure(exc)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+def video_response(call: Callable, *args, **kwargs) -> Response:
+    result = video_result(call, *args, **kwargs)
+    status = 200 if result.get("status") == "pass" else result.get("http_status", 422)
+    return Response(json.dumps(result), status_code=status, media_type="application/json")
+
+
+class TemporaryMediaResponse(FileResponse):
+    """Remove a transfer spool even when response delivery fails or disconnects."""
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            Path(self.path).unlink(missing_ok=True)
 
 
 def mcp_allowed_hosts() -> list[str]:
@@ -201,6 +258,136 @@ def register_routes(api_app: FastAPI) -> None:
             return service().publish(name)
         except KeyError:
             raise HTTPException(status_code=404, detail="device not found")
+
+    @api_app.get("/devices/{name}/video", dependencies=[Depends(authenticated)])
+    def get_device_video(name: str):
+        """Get video capabilities, fullscreen/overlay layers and disk storage."""
+        return video_response(service().video_status, name)
+
+    @api_app.get("/devices/{name}/video/storage", dependencies=[Depends(authenticated)])
+    def get_device_video_storage(name: str):
+        return video_response(service().video_storage, name)
+
+    @api_app.post("/devices/{name}/video", dependencies=[Depends(authenticated)])
+    def play_device_video(name: str, payload: VideoPlay):
+        """Play a prepared file, gallery or HTTP(S) source; repeat counts full cycles."""
+        return video_response(service().play_video, name, **payload.model_dump())
+
+    @api_app.post("/devices/{name}/video/stop", dependencies=[Depends(authenticated)])
+    def stop_device_video(name: str, payload: VideoStop = VideoStop()):
+        return video_response(service().stop_video, name, payload.presentation)
+
+    @api_app.get("/devices/{name}/video/galleries", dependencies=[Depends(authenticated)])
+    def list_device_video_galleries(name: str):
+        return video_response(service().list_video_galleries, name)
+
+    @api_app.post("/devices/{name}/video/galleries", dependencies=[Depends(authenticated)])
+    def create_device_video_gallery(name: str, payload: VideoGalleryCreate):
+        return video_response(service().create_video_gallery, name, payload.name)
+
+    @api_app.get("/devices/{name}/video/galleries/{gallery_id}", dependencies=[Depends(authenticated)])
+    def get_device_video_gallery(name: str, gallery_id: str):
+        return video_response(service().get_video_gallery, name, gallery_id)
+
+    @api_app.delete("/devices/{name}/video/galleries/{gallery_id}", dependencies=[Depends(authenticated)])
+    def delete_device_video_gallery(name: str, gallery_id: str):
+        return video_response(service().delete_video_gallery, name, gallery_id)
+
+    @api_app.get("/devices/{name}/video/files", dependencies=[Depends(authenticated)])
+    def list_device_video_files(name: str):
+        return video_response(service().list_video_files, name)
+
+    @api_app.get("/devices/{name}/video/files/{file_id}", dependencies=[Depends(authenticated)])
+    def get_device_video_file(name: str, file_id: str):
+        return video_response(service().get_video_file, name, file_id)
+
+    @api_app.delete("/devices/{name}/video/files/{file_id}", dependencies=[Depends(authenticated)])
+    def delete_device_video_file(name: str, file_id: str):
+        return video_response(service().delete_video_file, name, file_id)
+
+    @api_app.post("/devices/{name}/video/galleries/{gallery_id}/files",
+                  dependencies=[Depends(authenticated)], openapi_extra={
+                      "requestBody": {"required": True, "content": {
+                          "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}})
+    async def upload_device_video_file(name: str, gallery_id: str, request: Request,
+                                       filename: str = "video.mp4", kind: MediaKind = "video",
+                                       title: str | None = None, play: bool = False,
+                                       repeat: int = 1, presentation: Presentation = "auto"):
+        """Upload raw prepared bytes with Content-Length; larger files use bounded disk spooling."""
+        try:
+            options = upload_options(filename, kind, title, play, repeat, presentation)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        length_header = request.headers.get("content-length")
+        if length_header is None:
+            raise HTTPException(status_code=411, detail="Content-Length is required")
+        try:
+            length = int(length_header)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid Content-Length")
+        if length <= 0:
+            raise HTTPException(status_code=400, detail="empty media body")
+        manager = service()
+        storage = await run_in_threadpool(video_result, manager.video_storage, name)
+        if storage.get("status") != "pass":
+            return video_response(lambda: storage)
+        available = storage.get("storage", {}).get("available_upload_bytes")
+        if type(available) is not int or available < 0:
+            raise HTTPException(status_code=502, detail="device upload capacity unavailable")
+        if length > available:
+            raise HTTPException(status_code=507, detail="insufficient device storage")
+        if length > spool_available_bytes():
+            raise HTTPException(status_code=507, detail="insufficient host temporary storage")
+        path = None
+        try:
+            with HostSpool(length) as media:
+                path = media.path
+                size = 0
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > length:
+                        raise HTTPException(status_code=400, detail="body exceeds Content-Length")
+                    await run_in_threadpool(media.write, chunk)
+                if size != length:
+                    raise HTTPException(status_code=400, detail="body differs from Content-Length")
+            return await run_in_threadpool(video_response, manager.upload_video_file,
+                                           name, gallery_id, path, **options)
+        except VideoTransferError as exc:
+            return video_response(lambda: transfer_failure(exc))
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+    @api_app.get("/devices/{name}/video/files/{file_id}/data", dependencies=[Depends(authenticated)],
+                 responses={200: {"content": {"application/octet-stream": {}}}})
+    def download_device_video_file(name: str, file_id: str):
+        """Download prepared bytes without embedding them in a JSON response."""
+        manager = service()
+        metadata = video_result(manager.get_video_file, name, file_id)
+        if metadata.get("status") != "pass":
+            return video_response(lambda: metadata)
+        size = metadata.get("file", {}).get("bytes")
+        available = spool_available_bytes()
+        if type(size) is not int or size < 0:
+            raise HTTPException(status_code=502, detail="device file size unavailable")
+        if size > available:
+            raise HTTPException(status_code=507, detail="insufficient host temporary storage")
+        path = None
+        try:
+            path = new_spool_path("meural-video-download-")
+            result = video_result(manager.download_video_file, name, file_id, path, max_bytes=available)
+            if result.get("status") != "pass":
+                path.unlink(missing_ok=True)
+                return video_response(lambda: result)
+            return TemporaryMediaResponse(path, media_type="application/octet-stream")
+        except VideoTransferError as exc:
+            if path is not None:
+                path.unlink(missing_ok=True)
+            return video_response(lambda: transfer_failure(exc))
+        except BaseException:
+            if path is not None:
+                path.unlink(missing_ok=True)
+            raise
 
     @api_app.get("/devices/{name}/time", dependencies=[Depends(authenticated)])
     def device_time(name: str):

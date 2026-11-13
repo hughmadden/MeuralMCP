@@ -52,6 +52,26 @@ class ModeManagerTests(unittest.TestCase):
   self.client.identify.return_value={'orientation':'landscape','controls':controls};self.client.current_gallery.return_value={}
   result=self.manager.device_status('canvas-1')
   self.assertEqual(result['current_mode'],'gallery');self.assertEqual(result['modes'],controls['modes']);self.assertEqual(result['controls']['pending_mode'],'reef')
+ def test_renderer_registration_survives_rest_status_and_preserves_older_unknown(self):
+  definition=dict(MODE,menu_renderer='external')
+  catalog=[{'id':'gallery','label':'Gallery','enabled':True,'menu_renderer':'x11'},
+           {'id':'legacy','label':'Legacy','enabled':True}]
+  def register(value):
+   catalog.append({key:value[key] for key in ('id','label','menu_renderer')} | {'enabled':True})
+   return {'is_ok':True,'modes':catalog}
+  self.client.register_mode.side_effect=register
+  self.client.identify.side_effect=lambda:{'orientation':'landscape','controls':{'active_mode':'reef','modes':catalog}}
+  self.client.current_gallery.return_value={}
+  with patch.dict(os.environ,{'MEURAL_MCP_API_TOKEN':'test-token'}),patch('meural_mcp.api.service',return_value=self.manager):
+   client=TestClient(create_app())
+   self.assertEqual(client.post('/devices/canvas-1/modes',headers=AUTH,json=definition).status_code,200)
+   response=client.get('/devices/canvas-1',headers=AUTH)
+  self.assertEqual(response.status_code,200)
+  self.client.register_mode.assert_called_once_with(definition)
+  modes={value['id']:value for value in response.json()['modes']}
+  self.assertEqual(modes['reef']['menu_renderer'],'external')
+  self.assertEqual(modes['gallery']['menu_renderer'],'x11')
+  self.assertIsNone(modes['legacy']['menu_renderer'])
  def test_unavailable_mode_status_is_unknown(self):
   self.client.identify.side_effect=OSError('unavailable')
   result=self.manager.device_status('canvas-1')

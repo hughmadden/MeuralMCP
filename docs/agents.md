@@ -159,6 +159,11 @@ nested menus and consume events; the controller does not run their code.
 - `register_device_mode(name, definition)` registers/replaces an external mode
   without restart. Supply a complete object with `id`, `label`, `menu`, optional
   `icon`, `enabled` (default true), and root `idle_timeout_s` (default 12).
+  On supporting frames, optional `menu_renderer` defaults to `x11`. Use
+  `menu_renderer="external"` only when the mode's presenter consumes and composes
+  the on-device menu surface; it then receives menu pixels instead of a separate
+  visible X11 menu. The picker follows the active owner's renderer while browsing
+  other modes. The local surface contract is in the device's `/llms.txt`.
   Branches have `id`, `label`, `children` and optional icon/idle timeout; leaves
   have `id`, `label`, `action`, optional icon and scalar `value`. IDs use ASCII
   letters/digits/dot/underscore/colon/hyphen, start with a letter/digit, max 128;
@@ -180,6 +185,9 @@ nested menus and consume events; the controller does not run their code.
   Omit menu_id for root/picker; supply a branch ID for a submenu. Unset submenus
   inherit the nearest parent. Navigation resets the deadline. A closed/expired
   menu retains no GUI/native menu renderer and does not stop deliberate media.
+
+Status mode summaries preserve the reported `menu_renderer`. A null value means
+an older frame did not advertise it; do not infer composition support from that.
 
 ```json
 {"name":"canvas-1","definition":{"id":"reef","label":"Reef","icon":"applications-multimedia","menu":[{"id":"feed","label":"Feed fish","action":"feed"}]}}

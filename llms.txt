@@ -81,6 +81,11 @@ select_device_mode explicitly switches the frame now. navigate_device_menu
 browses candidates with left/right and commits with up; down/timeout cancels.
 Gallery is built in. With one enabled mode, up opens its menu directly. Mode
 registration reloads without restart and never activates the new mode.
+On supporting frames, optional registration menu_renderer="external" selects
+menu-surface publication for a presenter that composes those pixels; default is
+"x11". The picker uses the active owner's renderer while browsing candidates.
+The local surface contract is in the device's /llms.txt. Status summaries retain
+menu_renderer; null means an older frame did not report it.
 
 set_device_image_data and POST/PUT /devices/{name}/image automatically store,
 upload, remove stale managed-gallery items and select the native gallery/picture.

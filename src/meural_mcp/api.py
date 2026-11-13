@@ -3,7 +3,7 @@ import os
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
@@ -145,6 +145,8 @@ class ModeBrief(BaseModel):
     label: str
     enabled: bool
     icon: str | None = None
+    menu_renderer: Literal["x11", "external"] | None = Field(
+        default=None, description="Mode's menu compositor; null if the frame did not report it")
 
 
 class DeviceStatus(BaseModel):

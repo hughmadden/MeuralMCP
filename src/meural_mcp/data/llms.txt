@@ -53,8 +53,12 @@ Inspect get_device_video for capabilities, fullscreen/overlay layers and storage
 Prepared videos/galleries persist until explicitly deleted. Prepare MP4 H.264
 Baseline/YUV420P at the desired size/orientation before upload; no conversion is
 performed by the service. Transparent overlays use prepared native-sized `.mvo`
-bundles (application/vnd.meural.overlay): MVOZ0001 compressed premultiplied BGRA
-with per-pixel alpha. All preparation happens upstream; the frame decodes only.
+bundles (application/vnd.meural.overlay) with per-pixel alpha. Inspect
+capabilities.overlay.formats and preferred_format: DeviceControl 1.3 adds sparse
+MVOZ0002 for small moving effects, preserving legacy MVOZ0001 support. Prepare or
+losslessly repack upstream; bytes are forwarded unchanged and the frame never
+converts content. Sparse status backend/hardware_jobs/hardware_failed reports the
+actual compositor and successful content jobs; inspect frame/cycle progress too.
 play_device_video takes exactly one url/file_id/gallery_id; repeat=1 once
 (default),0 forever,N full playlist cycles. presentation=auto/fullscreen/overlay.
 stop_device_video presentation=all(default)/fullscreen/overlay.

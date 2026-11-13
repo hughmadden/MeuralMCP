@@ -132,15 +132,26 @@ the frame to encode, resize or rotate media. Prepare MP4 H.264 Baseline/YUV420P
 on a suitable host at the intended orientation and display size.
 
 Transparent overlays use native `.mvo` bundles, media type
-`application/vnd.meural.overlay`. The `MVOZ0001` format contains compressed
-premultiplied BGRA frames at the native canvas dimensions, preserving per-pixel
-alpha while the native gallery continues underneath. Prepare them upstream with
+`application/vnd.meural.overlay`. MeuralDeviceControl v1.3.0 adds sparse
+`MVOZ0002` snapshots of compressed premultiplied BGRA tiles, preserving per-pixel
+alpha while the native gallery continues underneath. Legacy `MVOZ0001` remains
+accepted. Inspect the advertised overlay formats before choosing. Prepare sparse
+effects upstream with
 [`tools/prepare_media.py` in MeuralDeviceControl](https://github.com/hughmadden/MeuralDeviceControl/blob/main/tools/prepare_media.py):
 
 ```sh
 python3 /path/to/MeuralDeviceControl/tools/prepare_media.py overlay \
-  rgba-frames/ overlay.mvo --width 1080 --height 1920
+  rgba-frames/ overlay.mvo --width 1080 --height 1920 --sparse
 ```
+
+Repack an existing prepared effect losslessly on the sending host with
+`prepare_media.py optimise-overlay old.mvo sparse.mvo`. This preserves pixels
+and frame timing while removing large empty tile regions. Legacy files retain
+their existing renderer cost until repacked. The sparse renderer uses small
+shared-memory updates and offscreen Rockchip RGA blending after a pixel
+self-test, with sparse CPU fallback. It does not change DRM display modes or
+planes. Read the actual layer backend and hardware job counters rather than
+inferring acceleration from capability discovery.
 
 Use the actual canvas dimensions reported by capabilities; the values above are
 an example. Upload the resulting bundle with `filename=overlay.mvo` and

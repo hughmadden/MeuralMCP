@@ -199,12 +199,18 @@ Video tools preserve prepared media in named galleries. Inspect
 
 Prepare media before uploading. Normal video uses MP4 with H.264 Baseline and
 YUV420P pixels at the intended display size/orientation. Transparent overlays use
-prepared `.mvo` bundles (media type `application/vnd.meural.overlay`): the
-`MVOZ0001` format carries compressed premultiplied BGRA frames at the native
-canvas dimensions, with true per-pixel alpha. The service forwards prepared bytes;
-all encoding, resizing, rotation and alpha preparation happen upstream. The frame
-decodes and displays the result. Check advertised capabilities before choosing a
-presentation. See the operator preparation guide for the host preparation tool.
+prepared `.mvo` bundles (media type `application/vnd.meural.overlay`), with true
+per-pixel alpha at the native canvas dimensions. Check advertised
+`capabilities.overlay.formats` and `preferred_format`: MeuralDeviceControl v1.3.0
+adds sparse `MVOZ0002` for small moving effects while accepting legacy
+`MVOZ0001`. Prepare or losslessly repack effects upstream for the preferred
+format. The service forwards prepared bytes unchanged; all encoding, resizing,
+rotation and alpha preparation happen upstream. The frame decodes and displays
+the result. Sparse layer status identifies the actual renderer in `backend`,
+successful content blends in `hardware_jobs`, and active hardware failure in
+`hardware_failed`; inspect these alongside frame/cycle progress. See the operator
+preparation guide for the host preparation tool and the device's `/llms.txt`
+for format details.
 
 ### Video gallery tools
 

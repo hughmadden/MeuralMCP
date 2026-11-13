@@ -9,6 +9,8 @@ the loop.
   certificate, no man-in-the-middle.
 - **Full local control** — galleries/items, immediate pictures, device time,
   settings/schema and hardware/network actions through REST and MCP.
+- **Modes** — current mode and mode list in status, explicit API/MCP selection,
+  provisional menu navigation and reloadable external-mode registration/events.
 - **REST API** — token-protected, loopback by default.
 - **MCP server** — stdio or hosted streamable-HTTP, so coding agents can set
   images directly.
@@ -51,6 +53,13 @@ curl -X PUT http://127.0.0.1:8733/devices/canvas-1/image \
   -H "Content-Type: image/jpeg" \
   --data-binary @poster.jpg
 ```
+
+This stores and publishes the image, automatically selecting its managed
+gallery/picture. It keeps the active display mode unchanged. When another mode is active, select
+Gallery first, then upload/publish: Gallery restores its saved native selection
+on activation. If an image was uploaded while away, select Gallery and re-publish
+the stored bytes. A gallery-item upload adds
+content without selecting it. Exact tools and routes are in the agent reference.
 
 ## MCP
 

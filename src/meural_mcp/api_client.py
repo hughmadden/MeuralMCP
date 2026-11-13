@@ -5,6 +5,7 @@ import requests
 
 from .video import (copy_video_download, playback_payload, resource_id,
                     upload_options, validate_presentation)
+from .modes import mode_id
 
 
 def verify_tls_from_value(value: Optional[str]) -> bool:
@@ -165,6 +166,33 @@ class RemoteApiClient:
             json={"action": action, "value": value, "value2": value2},
             timeout=60,
         )
+
+    # ---- prepared video --------------------------------------------------
+    def modes(self, name: str) -> dict[str, Any]:
+        return self.request("GET", f"/devices/{name}/modes")
+
+    def register_mode(self, name: str, definition: dict) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/modes", json=definition)
+
+    def unregister_mode(self, name: str, identifier: str) -> dict[str, Any]:
+        return self.request("DELETE", f"/devices/{name}/modes/{mode_id(identifier)}")
+
+    def select_mode(self, name: str, identifier: str) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/modes/{mode_id(identifier)}/select")
+
+    def navigate_menu(self, name: str, direction: str) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/menu", json={"direction": direction})
+
+    def mode_events(self, name: str, after: int = 0, epoch: str | None = None) -> dict[str, Any]:
+        params = {"after": after}
+        if epoch is not None:
+            params["epoch"] = epoch
+        return self.request("GET", f"/devices/{name}/modes/events", params=params)
+
+    def set_menu_timeout(self, name: str, identifier: str, seconds: int | None,
+                         menu_id: str | None = None) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/modes/{mode_id(identifier)}/timeout",
+                            json={"seconds": seconds, "menu_id": menu_id})
 
     # ---- prepared video --------------------------------------------------
     def video_status(self, name: str) -> dict[str, Any]:

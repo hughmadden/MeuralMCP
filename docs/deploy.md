@@ -63,6 +63,12 @@ Every configured device needs a token; on-device-only operations return
 
 ## Services
 
+For mode selection, complete mode summaries in status and the explicit gesture
+picker, use MeuralDeviceControl v1.2.1 or newer on the frames and MeuralMCP v0.7.0
+or newer. The existing generic action also supports direct mode selection.
+When upgrading an existing service, preserve its config/state and per-frame
+tokens. `init` is for a new installation; it is not a release-upgrade step.
+
 Run the agent-facing REST/MCP API and the sleep daemon using the supplied user or
 system units in `examples/systemd/`:
 
@@ -87,6 +93,8 @@ without a new upload. Publishing is immediate; no periodic reapply is required.
 Use `GET /devices` for inventory and `GET /devices/<name>` for current status.
 `gallery_id` is `null` until the first direct publish. Galleries, settings,
 actions, and immediate pictures use the routes in [agents.md](agents.md).
+Status also reports the active mode, registered modes and pending picker choice.
+Mode selection is explicit and independent of native gallery/image publishing.
 
 ## Sleep schedules
 

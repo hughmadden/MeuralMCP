@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from .video import copy_video_download, resource_id
+from .modes import mode_definition, mode_id
 
 DEVICE_PORT = 8099
 
@@ -57,12 +58,14 @@ class FrameLocalClient:
 
     # ---- identity --------------------------------------------------------
     def identify(self) -> dict:
-        status = self.get("/local/status").get("status", {})
+        payload = self.get("/local/status")
+        status = payload.get("status", {})
         return {
             "alias": status.get("alias"),
             "name": status.get("alias"),
             "orientation": status.get("orientation"),
             "version": status.get("version"),
+            "controls": payload.get("controls"),
         }
 
     def status(self) -> dict:
@@ -148,6 +151,37 @@ class FrameLocalClient:
     def wake(self) -> dict:
         return self.post("/local/action", data={"do": "resume"})
 
+    # ---- modes and menu input --------------------------------------------
+    def modes(self) -> dict:
+        return self.get("/local/modes")
+
+    def register_mode(self, definition: dict) -> dict:
+        response = requests.post(f"{self.base_url}/local/modes", json=mode_definition(definition),
+                                 timeout=self.timeout, params=self._params())
+        self._check(response)
+        return response.json()
+
+    def unregister_mode(self, identifier: str) -> dict:
+        return self._delete(f"/local/modes/{mode_id(identifier)}")
+
+    def select_mode(self, identifier: str) -> dict:
+        return self.post(f"/local/modes/{mode_id(identifier)}/select")
+
+    def navigate_menu(self, direction: str) -> dict:
+        return self.action("navigate", direction)
+
+    def mode_events(self, after: int = 0, epoch: str | None = None) -> dict:
+        params = {"after": after}
+        if epoch is not None:
+            params["epoch"] = epoch
+        return self.get("/local/modes/events", params=params)
+
+    def set_menu_timeout(self, identifier: str, seconds: int | None, menu_id: str | None = None) -> dict:
+        data = {"seconds": "inherit" if seconds is None else seconds}
+        if menu_id is not None:
+            data["menu_id"] = menu_id
+        return self.post(f"/local/modes/{mode_id(identifier)}/timeout", data=data)
+
     # ---- prepared video --------------------------------------------------
     def video_status(self) -> dict:
         return self.get("/local/video")
@@ -165,7 +199,7 @@ class FrameLocalClient:
         return self.get(f"/local/video/galleries/{resource_id(gallery_id)}")
 
     def delete_video_gallery(self, gallery_id: str) -> dict:
-        return self._video_delete(f"/local/video/galleries/{resource_id(gallery_id)}")
+        return self._delete(f"/local/video/galleries/{resource_id(gallery_id)}")
 
     def list_video_files(self) -> dict:
         return self.get("/local/video/files")
@@ -174,9 +208,9 @@ class FrameLocalClient:
         return self.get(f"/local/video/files/{resource_id(file_id)}")
 
     def delete_video_file(self, file_id: str) -> dict:
-        return self._video_delete(f"/local/video/files/{resource_id(file_id)}")
+        return self._delete(f"/local/video/files/{resource_id(file_id)}")
 
-    def _video_delete(self, path: str) -> dict:
+    def _delete(self, path: str) -> dict:
         response = requests.delete(f"{self.base_url}{path}", timeout=self.timeout,
                                    params=self._params())
         self._check(response)

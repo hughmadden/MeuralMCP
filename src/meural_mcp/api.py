@@ -14,6 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from . import __version__
 
 from .manager import ManagerService, auth_token_valid, load_config
+from .modes import MenuDirection
 from .video import (HostSpool, MediaKind, Presentation, StopPresentation, VideoTransferError,
                     new_spool_path, playback_payload, spool_available_bytes,
                     transfer_failure, upload_options)
@@ -128,7 +129,33 @@ class VideoStop(BaseModel):
     presentation: StopPresentation = "all"
 
 
-def video_result(call: Callable, *args, **kwargs) -> dict:
+class MenuInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    direction: MenuDirection
+
+
+class MenuTimeout(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    seconds: StrictInt | None = Field(ge=1, le=3600, description="Idle seconds; null clears the override")
+    menu_id: str | None = None
+
+
+class ModeBrief(BaseModel):
+    id: str
+    label: str
+    enabled: bool
+    icon: str | None = None
+
+
+class DeviceStatus(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str
+    current_mode: str | None = Field(default=None, description="Active mode reported by the frame; null if unavailable")
+    modes: list[ModeBrief] = Field(default_factory=list, description="Registered modes with labels, icons and enabled state")
+    controls: dict | None = Field(default=None, description="Menu/picker state, pending mode, generation and event cursor")
+
+
+def frame_result(call: Callable, *args, **kwargs) -> dict:
     try:
         return call(*args, **kwargs)
     except KeyError:
@@ -139,8 +166,8 @@ def video_result(call: Callable, *args, **kwargs) -> dict:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-def video_response(call: Callable, *args, **kwargs) -> Response:
-    result = video_result(call, *args, **kwargs)
+def frame_response(call: Callable, *args, **kwargs) -> Response:
+    result = frame_result(call, *args, **kwargs)
     status = 200 if result.get("status") == "pass" else result.get("http_status", 422)
     return Response(json.dumps(result), status_code=status, media_type="application/json")
 
@@ -188,6 +215,9 @@ def create_app() -> FastAPI:
 
 
 def register_routes(api_app: FastAPI) -> None:
+    image_body = {"requestBody": {"required": True, "content": {
+        kind: {"schema": {"type": "string", "format": "binary"}}
+        for kind in ("image/png", "image/jpeg")}}}
     @api_app.get("/healthz")
     def healthz():
         return {"ok": True}
@@ -209,8 +239,9 @@ def register_routes(api_app: FastAPI) -> None:
     def summary_status():
         return service().summary_status()
 
-    @api_app.get("/devices/{name}", dependencies=[Depends(authenticated)])
+    @api_app.get("/devices/{name}", dependencies=[Depends(authenticated)], response_model=DeviceStatus)
     def get_device(name: str):
+        """Read device status, including current mode, mode list and provisional picker selection."""
         try:
             return service().device_status(name)
         except KeyError:
@@ -227,9 +258,17 @@ def register_routes(api_app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="image not found")
         return FileResponse(image)
 
-    @api_app.put("/devices/{name}/image", dependencies=[Depends(authenticated)])
-    @api_app.post("/devices/{name}/image", dependencies=[Depends(authenticated)])
+    @api_app.put("/devices/{name}/image", dependencies=[Depends(authenticated)], openapi_extra=image_body)
+    @api_app.post("/devices/{name}/image", dependencies=[Depends(authenticated)], openapi_extra=image_body)
     async def put_device_image(name: str, request: Request):
+        """Store and publish an image: upload to the managed gallery, remove stale items, select gallery/item.
+
+        No extra publish/show call is needed after success while Gallery is active.
+        This updates the native gallery/picture and does not select a display mode.
+        Select Gallery BEFORE uploading/publishing when it should own the screen:
+        activation restores its saved selection. If uploaded while away, select
+        Gallery and publish the stored image again.
+        """
         body = await request.body()
         if not body:
             raise HTTPException(status_code=400, detail="empty image body")
@@ -255,57 +294,97 @@ def register_routes(api_app: FastAPI) -> None:
 
     @api_app.post("/devices/{name}/publish", dependencies=[Depends(authenticated)])
     def publish_device(name: str):
-        """Re-publish the stored image directly to the frame's on-device API."""
+        """Re-publish stored bytes, removing stale managed-gallery items and selecting gallery/item.
+
+        No upload is needed. Display-mode ownership is unchanged. Select Gallery
+        BEFORE publishing when it should own the screen, since activation restores
+        its saved native gallery/item.
+        """
         try:
             return service().publish(name)
         except KeyError:
             raise HTTPException(status_code=404, detail="device not found")
 
+    @api_app.get("/devices/{name}/modes", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def get_device_modes(name: str):
+        """List mode definitions, current mode, pending selection and timeout overrides."""
+        return frame_response(service().modes, name)
+
+    @api_app.post("/devices/{name}/modes", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def register_device_mode(name: str, definition: dict):
+        """Register/update a declarative mode without restart or activation. Gallery is built in."""
+        return frame_response(service().register_mode, name, definition)
+
+    @api_app.get("/devices/{name}/modes/events", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def get_device_mode_events(name: str, after: int = 0, epoch: str | None = None):
+        """Poll bounded mode events; reconcile active owner/generation after epoch changes or gaps."""
+        return frame_response(service().mode_events, name, after, epoch)
+
+    @api_app.delete("/devices/{name}/modes/{mode_id}", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def unregister_device_mode(name: str, mode_id: str):
+        """Remove an inactive external mode; Gallery and active modes are protected."""
+        return frame_response(service().unregister_mode, name, mode_id)
+
+    @api_app.post("/devices/{name}/modes/{mode_id}/select", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def select_device_mode(name: str, mode_id: str):
+        """Explicitly switch to an enabled mode now and close the picker/menu."""
+        return frame_response(service().select_mode, name, mode_id)
+
+    @api_app.post("/devices/{name}/modes/{mode_id}/timeout", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def set_device_menu_timeout(name: str, mode_id: str, payload: MenuTimeout):
+        """Reload persistent idle timeout for a root/picker or submenu; null restores inheritance."""
+        return frame_response(service().set_menu_timeout, name, mode_id, payload.seconds, payload.menu_id)
+
+    @api_app.post("/devices/{name}/menu", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def navigate_device_menu(name: str, payload: MenuInput):
+        """Navigate without automatic mode switching: left/right browse, up selects, down cancels/backs out."""
+        return frame_response(service().navigate_menu, name, payload.direction)
+
     @api_app.get("/devices/{name}/video", dependencies=[Depends(authenticated)])
     def get_device_video(name: str):
         """Get video capabilities, fullscreen/overlay layers and disk storage."""
-        return video_response(service().video_status, name)
+        return frame_response(service().video_status, name)
 
     @api_app.get("/devices/{name}/video/storage", dependencies=[Depends(authenticated)])
     def get_device_video_storage(name: str):
-        return video_response(service().video_storage, name)
+        return frame_response(service().video_storage, name)
 
     @api_app.post("/devices/{name}/video", dependencies=[Depends(authenticated)])
     def play_device_video(name: str, payload: VideoPlay):
         """Play prepared files/galleries or HTTP(S)/RTSP(S) streams; alpha uses HTTP(S)."""
-        return video_response(service().play_video, name, **payload.model_dump())
+        return frame_response(service().play_video, name, **payload.model_dump())
 
     @api_app.post("/devices/{name}/video/stop", dependencies=[Depends(authenticated)])
     def stop_device_video(name: str, payload: VideoStop = VideoStop()):
-        return video_response(service().stop_video, name, payload.presentation)
+        return frame_response(service().stop_video, name, payload.presentation)
 
     @api_app.get("/devices/{name}/video/galleries", dependencies=[Depends(authenticated)])
     def list_device_video_galleries(name: str):
-        return video_response(service().list_video_galleries, name)
+        return frame_response(service().list_video_galleries, name)
 
     @api_app.post("/devices/{name}/video/galleries", dependencies=[Depends(authenticated)])
     def create_device_video_gallery(name: str, payload: VideoGalleryCreate):
-        return video_response(service().create_video_gallery, name, payload.name)
+        return frame_response(service().create_video_gallery, name, payload.name)
 
     @api_app.get("/devices/{name}/video/galleries/{gallery_id}", dependencies=[Depends(authenticated)])
     def get_device_video_gallery(name: str, gallery_id: str):
-        return video_response(service().get_video_gallery, name, gallery_id)
+        return frame_response(service().get_video_gallery, name, gallery_id)
 
     @api_app.delete("/devices/{name}/video/galleries/{gallery_id}", dependencies=[Depends(authenticated)])
     def delete_device_video_gallery(name: str, gallery_id: str):
-        return video_response(service().delete_video_gallery, name, gallery_id)
+        return frame_response(service().delete_video_gallery, name, gallery_id)
 
     @api_app.get("/devices/{name}/video/files", dependencies=[Depends(authenticated)])
     def list_device_video_files(name: str):
-        return video_response(service().list_video_files, name)
+        return frame_response(service().list_video_files, name)
 
     @api_app.get("/devices/{name}/video/files/{file_id}", dependencies=[Depends(authenticated)])
     def get_device_video_file(name: str, file_id: str):
-        return video_response(service().get_video_file, name, file_id)
+        return frame_response(service().get_video_file, name, file_id)
 
     @api_app.delete("/devices/{name}/video/files/{file_id}", dependencies=[Depends(authenticated)])
     def delete_device_video_file(name: str, file_id: str):
-        return video_response(service().delete_video_file, name, file_id)
+        return frame_response(service().delete_video_file, name, file_id)
 
     @api_app.post("/devices/{name}/video/galleries/{gallery_id}/files",
                   dependencies=[Depends(authenticated)], openapi_extra={
@@ -330,9 +409,9 @@ def register_routes(api_app: FastAPI) -> None:
         if length <= 0:
             raise HTTPException(status_code=400, detail="empty media body")
         manager = service()
-        storage = await run_in_threadpool(video_result, manager.video_storage, name)
+        storage = await run_in_threadpool(frame_result, manager.video_storage, name)
         if storage.get("status") != "pass":
-            return video_response(lambda: storage)
+            return frame_response(lambda: storage)
         available = storage.get("storage", {}).get("available_upload_bytes")
         if type(available) is not int or available < 0:
             raise HTTPException(status_code=502, detail="device upload capacity unavailable")
@@ -352,10 +431,10 @@ def register_routes(api_app: FastAPI) -> None:
                     await run_in_threadpool(media.write, chunk)
                 if size != length:
                     raise HTTPException(status_code=400, detail="body differs from Content-Length")
-            return await run_in_threadpool(video_response, manager.upload_video_file,
+            return await run_in_threadpool(frame_response, manager.upload_video_file,
                                            name, gallery_id, path, **options)
         except VideoTransferError as exc:
-            return video_response(lambda: transfer_failure(exc))
+            return frame_response(lambda: transfer_failure(exc))
         finally:
             if path is not None:
                 path.unlink(missing_ok=True)
@@ -365,9 +444,9 @@ def register_routes(api_app: FastAPI) -> None:
     def download_device_video_file(name: str, file_id: str):
         """Download prepared bytes without embedding them in a JSON response."""
         manager = service()
-        metadata = video_result(manager.get_video_file, name, file_id)
+        metadata = frame_result(manager.get_video_file, name, file_id)
         if metadata.get("status") != "pass":
-            return video_response(lambda: metadata)
+            return frame_response(lambda: metadata)
         size = metadata.get("file", {}).get("bytes")
         available = spool_available_bytes()
         if type(size) is not int or size < 0:
@@ -377,15 +456,15 @@ def register_routes(api_app: FastAPI) -> None:
         path = None
         try:
             path = new_spool_path("meural-video-download-")
-            result = video_result(manager.download_video_file, name, file_id, path, max_bytes=available)
+            result = frame_result(manager.download_video_file, name, file_id, path, max_bytes=available)
             if result.get("status") != "pass":
                 path.unlink(missing_ok=True)
-                return video_response(lambda: result)
+                return frame_response(lambda: result)
             return TemporaryMediaResponse(path, media_type="application/octet-stream")
         except VideoTransferError as exc:
             if path is not None:
                 path.unlink(missing_ok=True)
-            return video_response(lambda: transfer_failure(exc))
+            return frame_response(lambda: transfer_failure(exc))
         except BaseException:
             if path is not None:
                 path.unlink(missing_ok=True)
@@ -409,6 +488,11 @@ def register_routes(api_app: FastAPI) -> None:
 
     @api_app.post("/devices/{name}/galleries/{gallery_id}/items", dependencies=[Depends(authenticated)])
     async def upload_gallery_item(name: str, gallery_id: str, request: Request, title: Optional[str] = None):
+        """Add image bytes to a gallery and return the item ID; does not select gallery/item or display mode.
+
+        Use explicit show-gallery/show-item calls to change the native selection.
+        Select Gallery BEFORE the show calls if it should own the screen.
+        """
         body = await request.body()
         if not body:
             raise HTTPException(status_code=400, detail="empty image body")

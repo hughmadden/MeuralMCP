@@ -28,6 +28,8 @@ create_device_gallery, upload_device_gallery_item, show_device_gallery,
 show_device_item, delete_device_gallery, delete_device_item, set_device_picture,
 get_device_settings, get_device_settings_schema, update_device_settings,
 run_device_action,
+get_device_modes, select_device_mode, navigate_device_menu, register_device_mode,
+unregister_device_mode, get_device_mode_events, set_device_menu_timeout,
 get_device_video, get_device_video_storage, list_device_video_galleries,
 create_device_video_gallery, get_device_video_gallery,
 delete_device_video_gallery, list_device_video_files, get_device_video_file,
@@ -66,3 +68,23 @@ error or stop; overlay leaves it running underneath. See docs/agents.md for all
 Prepared fullscreen streams accept HTTP(S)/HLS and RTSP(S) media URLs. The native
 decoder must support the actual stream codec/profile; protocol availability is
 not playback proof. Transparent prepared-alpha streams require HTTP(S).
+
+## Modes and image publishing
+
+Device status includes current_mode, registered modes and controls (menu kind,
+pending candidate, generation and cursor). get_device_modes reads full menus;
+select_device_mode explicitly switches the frame now. navigate_device_menu
+browses candidates with left/right and commits with up; down/timeout cancels.
+Gallery is built in. With one enabled mode, up opens its menu directly. Mode
+registration reloads without restart and never activates the new mode.
+
+set_device_image_data and POST/PUT /devices/{name}/image automatically store,
+upload, remove stale managed-gallery items and select the native gallery/picture.
+No extra publish/show call is needed after success while Gallery is active. publish_device re-publishes
+stored bytes with the same selection behavior. None changes active display mode;
+select Gallery BEFORE upload/publish when it should own the screen. Gallery
+restores its saved selection on activation. If uploaded while away, select Gallery
+and publish_device again to show the stored image. By contrast,
+upload_device_gallery_item only adds an item; display requires show-gallery/item
+calls, after selecting Gallery when needed. See docs/agents.md for mode tools,
+shapes and event-consumer rules.

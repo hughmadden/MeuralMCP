@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 
 from .api_client import RemoteApiClient, verify_tls_from_value
 from .manager import ManagerService
+from .modes import MenuDirection
 from .video import (HostSpool, MCP_VIDEO_MAX_BYTES, MediaKind, Presentation, StopPresentation,
                     VideoTransferError, new_spool_path, playback_payload,
                     transfer_failure, upload_options)
@@ -39,6 +40,7 @@ def _service(
 DEVICE_LIST_FIELDS = (
     "name", "display_name", "enabled", "orientation", "local_ip", "image",
     "gallery_id", "reachable", "frame", "current_gallery",
+    "current_mode", "modes", "controls",
 )
 
 
@@ -227,6 +229,35 @@ def _feature(operation: str, name: str, storage_dir=None, config=None,
 
 def mcp_device_time(name: str, **kw) -> dict[str, Any]:
     return _feature("device_time", name, **kw)
+
+
+def mcp_get_device_modes(name: str, **kw) -> dict[str, Any]:
+    return _feature("modes", name, **kw)
+
+
+def mcp_register_device_mode(name: str, definition: dict[str, Any], **kw) -> dict[str, Any]:
+    return _feature("register_mode", name, definition=definition, **kw)
+
+
+def mcp_unregister_device_mode(name: str, mode_id: str, **kw) -> dict[str, Any]:
+    return _feature("unregister_mode", name, identifier=mode_id, **kw)
+
+
+def mcp_select_device_mode(name: str, mode_id: str, **kw) -> dict[str, Any]:
+    return _feature("select_mode", name, identifier=mode_id, **kw)
+
+
+def mcp_navigate_device_menu(name: str, direction: MenuDirection, **kw) -> dict[str, Any]:
+    return _feature("navigate_menu", name, direction=direction, **kw)
+
+
+def mcp_get_device_mode_events(name: str, after: int = 0, epoch: str | None = None, **kw) -> dict[str, Any]:
+    return _feature("mode_events", name, after=after, epoch=epoch, **kw)
+
+
+def mcp_set_device_menu_timeout(name: str, mode_id: str, seconds: int | None,
+                              menu_id: str | None = None, **kw) -> dict[str, Any]:
+    return _feature("set_menu_timeout", name, identifier=mode_id, seconds=seconds, menu_id=menu_id, **kw)
 
 
 def mcp_list_device_galleries(name: str, **kw) -> dict[str, Any]:
@@ -426,13 +457,49 @@ def build_mcp_server(
     )
 
     @server.tool()
+    def get_device_modes(name: str) -> dict[str, Any]:
+        """List registered modes, current mode and pending menu selection. Reading never switches modes."""
+        return mcp_get_device_modes(name)
+
+    @server.tool()
+    def register_device_mode(name: str, definition: dict[str, Any]) -> dict[str, Any]:
+        """Register/update a declarative mode menu without restart. Registration does not activate it."""
+        return mcp_register_device_mode(name, definition)
+
+    @server.tool()
+    def unregister_device_mode(name: str, mode_id: str) -> dict[str, Any]:
+        """Remove an inactive external mode. Built-in Gallery is protected."""
+        return mcp_unregister_device_mode(name, mode_id)
+
+    @server.tool()
+    def select_device_mode(name: str, mode_id: str) -> dict[str, Any]:
+        """Explicitly select an enabled mode now, committing display ownership and closing the menu."""
+        return mcp_select_device_mode(name, mode_id)
+
+    @server.tool()
+    def navigate_device_menu(name: str, direction: MenuDirection) -> dict[str, Any]:
+        """Send menu input. Left/right browse mode candidates; up commits; down cancels/backs out."""
+        return mcp_navigate_device_menu(name, direction)
+
+    @server.tool()
+    def get_device_mode_events(name: str, after: int = 0, epoch: str | None = None) -> dict[str, Any]:
+        """Poll activation/deactivation/action events; reconcile active mode and generation on epoch/gap changes."""
+        return mcp_get_device_mode_events(name, after, epoch)
+
+    @server.tool()
+    def set_device_menu_timeout(name: str, mode_id: str, seconds: int | None,
+                                menu_id: str | None = None) -> dict[str, Any]:
+        """Set persistent idle timeout (1–3600 seconds); null clears an override. Omit menu_id for root/picker."""
+        return mcp_set_device_menu_timeout(name, mode_id, seconds, menu_id)
+
+    @server.tool()
     def list_devices() -> dict[str, Any]:
         """List configured devices with names, IPs, orientation, enabled state, reachability, images, and current galleries."""
         return mcp_list_devices()
 
     @server.tool()
     def get_device_status(name: str) -> dict[str, Any]:
-        """Get one device's inventory and status, including display name, LAN IP, orientation, reachability, state, and assigned image."""
+        """Get device status including current mode, registered modes, menu/pending selection, gallery and assigned image."""
         return mcp_get_device_status(name)
 
     @server.tool()
@@ -442,7 +509,13 @@ def build_mcp_server(
 
     @server.tool()
     def set_device_image_data(name: str, image_base64: str, filename: str = "image.png") -> dict[str, Any]:
-        """Store a base64-encoded image and publish it to that frame as a one-item gallery."""
+        """Store and publish image bytes: replace managed-gallery items and select the gallery/picture automatically.
+
+        No extra publish/show calls are needed while Gallery is active. Does not change
+        the active mode. Select Gallery BEFORE uploading when it should own the
+        screen; activation restores its saved native selection. If uploaded while
+        away, select Gallery then publish_device again.
+        """
         return mcp_set_device_image_data(name, image_base64, filename)
 
     @server.tool()
@@ -504,7 +577,7 @@ def build_mcp_server(
     @server.tool()
     def upload_device_gallery_item(name: str, gallery_id: str, image_base64: str,
                                    filename: str = "image.png", title: Optional[str] = None) -> dict[str, Any]:
-        """Upload base64 image bytes into an on-device gallery."""
+        """Add image bytes without selecting gallery/item or changing mode. Select Gallery before explicit show calls when needed."""
         return mcp_upload_device_gallery_item(name, gallery_id, image_base64, filename, title)
 
     @server.tool()

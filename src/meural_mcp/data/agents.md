@@ -22,7 +22,11 @@ assigned image, and current gallery. Full historical state is available through
 ### `get_device_status(name)`
 
 One device: the same fields plus frame-reported alias, firmware version and
-orientation, its current gallery, and the on-device gallery state.
+orientation, its current gallery, and the on-device gallery state. `current_mode`
+is the active display owner; `modes` lists registered IDs/labels/icons/enabled
+flags. `controls` reports menu kind, pending candidate, generation and event
+cursor. A highlighted `pending_mode` is not the current owner. Unavailable mode
+state is null/empty rather than inferred.
 
 ### `get_device_image(name)`
 
@@ -30,8 +34,19 @@ The stored image path for a device, and whether one exists.
 
 ### `set_device_image_data(name, image_base64, filename)`
 
-Store image bytes uploaded by the client and show them. Use this over remote
-transport, where the server cannot see your filesystem.
+Store image bytes and automatically publish them. The service creates/reuses a
+managed one-item gallery, uploads the new item, removes stale managed-gallery
+items, and selects that gallery and picture. These are extra calls made by the
+service; the caller does not need separate publish/show calls after success while Gallery
+is active.
+Use this over remote transport, where the server cannot see your filesystem.
+
+This changes the native gallery/picture, **not the active display mode**. If
+another mode owns the screen, it can remain visible. For immediate display, call
+`select_device_mode(name, "gallery")` **before** uploading/publishing. Gallery
+restores its saved native selection on activation, which can overwrite a selection
+made while it was inactive. If already uploaded while away, select Gallery and
+then call `publish_device` to re-publish the stored bytes.
 
 ```json
 {"name": "canvas-1", "filename": "poster.jpg", "image_base64": "<base64>"}
@@ -43,8 +58,11 @@ Forget the stored image for a device. The frame keeps showing whatever it has.
 
 ### `publish_device(name)`
 
-Re-send the stored image to the frame. Images are delivered once, so use this if
-a frame has been reset or is showing the wrong thing.
+Re-send the stored image to the frame, replacing stale managed-gallery items and
+selecting gallery/picture automatically. This does not change the active mode;
+select Gallery first when it should own the screen.
+Images are delivered once, so use this if a frame has been reset or is showing
+the wrong thing.
 
 ### `sleep_device(name)` / `wake_device(name)`
 
@@ -82,7 +100,10 @@ Create an on-device gallery.
 
 ### `upload_device_gallery_item(name, gallery_id, image_base64, filename, title)`
 
-Upload base64 image bytes into an on-device gallery and return its item id.
+Add base64 image bytes to an on-device gallery and return its item ID. This
+operation does not select the gallery/item or change the active mode. Use
+`show_device_gallery` / `show_device_item` as explicit follow-up calls. Select
+Gallery **before** those show calls when it should take display ownership.
 
 ### `show_device_gallery(name, gallery_id)` / `show_device_item(name, item_id)`
 
@@ -119,6 +140,54 @@ and others failed, and `failed` when none applied.
 Run a frame action with optional arguments. This exposes the frame's display,
 power, input, network, Bluetooth, locale, RTC and ambient-light actions. Power,
 network, and input actions can be disruptive. Values are validated by the frame.
+
+## Modes and menu input
+
+Gallery is built in and is the initial mode. External modes register data-only
+nested menus and consume events; the controller does not run their code.
+
+- `get_device_modes(name)` lists complete definitions, current `controls`,
+  and timeout overrides. Reading or registering never activates a mode.
+- `select_device_mode(name, mode_id)` explicitly commits a mode switch now and
+  closes the menu/picker. API/MCP callers can switch modes directly.
+- `navigate_device_menu(name, direction)` accepts `left`, `right`, `up`, `down`.
+  With one enabled mode, closed-menu left/right does nothing; up opens its menu.
+  With multiple modes, left/right opens/browses a picker while the current mode
+  keeps running. Up selects; down or timeout cancels. Each root menu includes
+  Switch mode… only when multiple modes are enabled. Inside mode menus,
+  left/right highlights, up enters/selects, and down backs out.
+- `register_device_mode(name, definition)` registers/replaces an external mode
+  without restart. Supply a complete object with `id`, `label`, `menu`, optional
+  `icon`, `enabled` (default true), and root `idle_timeout_s` (default 12).
+  Branches have `id`, `label`, `children` and optional icon/idle timeout; leaves
+  have `id`, `label`, `action`, optional icon and scalar `value`. IDs use ASCII
+  letters/digits/dot/underscore/colon/hyphen, start with a letter/digit, max 128;
+  node IDs are unique per mode. Labels max 160 characters without controls;
+  string values max 512. Icons are installed theme names, never URLs/paths.
+  Bounds: 16 modes including Gallery, 64 nodes per external mode, depth 8,
+  64 KiB control body. Gallery is protected and `events` is reserved.
+- `unregister_device_mode(name, mode_id)` removes an inactive external mode.
+  Active modes must first be left; built-in Gallery cannot be removed.
+- `get_device_mode_events(name, after=0, epoch=null)` polls activation,
+  deactivation and opaque leaf-action events. Keep a cursor per server epoch,
+  deduplicate `(epoch, sequence)` and reconcile current owner/generation after
+  startup, reconnect or `gap=true`. The 128-event feed is RAM-only; it is not a
+  durable work queue. Ignore stale-generation actions. Mode implementations
+  perform their own rendering/actions; selection acceptance is not proof of
+  renderer readiness. Browse/cancel emits no ownership events.
+- `set_device_menu_timeout(name, mode_id, seconds, menu_id=null)` sets a persistent
+  idle override immediately. Seconds is integer 1–3600 or null to clear it.
+  Omit menu_id for root/picker; supply a branch ID for a submenu. Unset submenus
+  inherit the nearest parent. Navigation resets the deadline. A closed/expired
+  menu retains no GUI/native menu renderer and does not stop deliberate media.
+
+```json
+{"name":"canvas-1","definition":{"id":"reef","label":"Reef","icon":"applications-multimedia","menu":[{"id":"feed","label":"Feed fish","action":"feed"}]}}
+```
+
+Then explicitly select with `{"name":"canvas-1","mode_id":"reef"}`.
+The same direct selection is available through `run_device_action` using
+`action="select_mode"`, `value="reef"`; `action="navigate"` sends menu input.
 
 ## Prepared video and streams
 
@@ -223,6 +292,13 @@ DELETE /devices/{name}/schedule
 POST   /devices/{name}/publish
 POST   /devices/{name}/sleep
 POST   /devices/{name}/wake
+GET    /devices/{name}/modes
+POST   /devices/{name}/modes                 <- complete definition object
+GET    /devices/{name}/modes/events          ?after=0&epoch=...
+DELETE /devices/{name}/modes/{mode_id}
+POST   /devices/{name}/modes/{mode_id}/select
+POST   /devices/{name}/modes/{mode_id}/timeout <- {"seconds":12,"menu_id":null}
+POST   /devices/{name}/menu                  <- {"direction":"right"}
 GET    /devices/{name}/time
 GET    /devices/{name}/galleries
 POST   /devices/{name}/galleries     <- {"name": "Gallery name"}

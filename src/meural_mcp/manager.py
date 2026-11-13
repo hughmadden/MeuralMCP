@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from .local import FrameLocalClient, FrameLocalError
+from .modes import direction as menu_direction, event_cursor, menu_timeout, mode_definition, mode_id
 from .video import (VideoTransferError, playback_payload, resource_id,
                     upload_options, validate_presentation)
 
@@ -287,8 +288,8 @@ class ManagerService:
             return {**response, "status": "pass"}
         return {"status": "pass", result_key: response}
 
-    # ---- prepared video: forwarding only, never conversion ----------------
-    def _video_call(self, name: str, call: Callable[[FrameLocalClient], Any],
+    # ---- checked frame transport -----------------------------------------
+    def _checked_device_call(self, name: str, call: Callable[[FrameLocalClient], Any],
                     *, timeout: int = 30) -> dict[str, Any]:
         try:
             return self._on_device_call(name, call, timeout=timeout)
@@ -310,38 +311,70 @@ class ManagerService:
             return {"status": "failed", "is_ok": False,
                     "reason": "device_unavailable", "http_status": 502}
 
+    # ---- modes and menu input --------------------------------------------
+    def modes(self, name: str) -> dict[str, Any]:
+        return self._checked_device_call(name, lambda client: client.modes())
+
+    def register_mode(self, name: str, definition: dict) -> dict[str, Any]:
+        mode_definition(definition)
+        return self._checked_device_call(name, lambda client: client.register_mode(definition))
+
+    def unregister_mode(self, name: str, identifier: str) -> dict[str, Any]:
+        mode_id(identifier)
+        return self._checked_device_call(name, lambda client: client.unregister_mode(identifier))
+
+    def select_mode(self, name: str, identifier: str) -> dict[str, Any]:
+        mode_id(identifier)
+        return self._checked_device_call(name, lambda client: client.select_mode(identifier))
+
+    def navigate_menu(self, name: str, direction: str) -> dict[str, Any]:
+        menu_direction(direction)
+        return self._checked_device_call(name, lambda client: client.navigate_menu(direction))
+
+    def mode_events(self, name: str, after: int = 0, epoch: str | None = None) -> dict[str, Any]:
+        event_cursor(after, epoch)
+        return self._checked_device_call(name, lambda client: client.mode_events(after, epoch))
+
+    def set_menu_timeout(self, name: str, identifier: str, seconds: int | None,
+                         menu_id: str | None = None) -> dict[str, Any]:
+        mode_id(identifier)
+        menu_timeout(seconds, menu_id)
+        return self._checked_device_call(name, lambda client: client.set_menu_timeout(identifier, seconds, menu_id))
+
+    # ---- prepared video: forwarding only, never conversion ----------------
+
     def video_status(self, name: str) -> dict[str, Any]:
-        return self._video_call(name, lambda client: client.video_status())
+        return self._checked_device_call(name, lambda client: client.video_status())
 
     def video_storage(self, name: str) -> dict[str, Any]:
-        return self._video_call(name, lambda client: client.video_storage())
+        return self._checked_device_call(name, lambda client: client.video_storage())
 
     def list_video_galleries(self, name: str) -> dict[str, Any]:
-        return self._video_call(name, lambda client: client.list_video_galleries())
+        return self._checked_device_call(name, lambda client: client.list_video_galleries())
 
     def create_video_gallery(self, name: str, gallery_name: str) -> dict[str, Any]:
         if not isinstance(gallery_name, str) or not gallery_name.strip():
             raise ValueError("gallery_name must be nonempty")
-        return self._video_call(name, lambda client: client.create_video_gallery(gallery_name))
+        return self._checked_device_call(name, lambda client: client.create_video_gallery(gallery_name))
 
     def get_video_gallery(self, name: str, gallery_id: str) -> dict[str, Any]:
         resource_id(gallery_id)
-        return self._video_call(name, lambda client: client.get_video_gallery(gallery_id))
+        return self._checked_device_call(name, lambda client: client.get_video_gallery(gallery_id))
 
     def delete_video_gallery(self, name: str, gallery_id: str) -> dict[str, Any]:
         resource_id(gallery_id)
-        return self._video_call(name, lambda client: client.delete_video_gallery(gallery_id))
+        return self._checked_device_call(name, lambda client: client.delete_video_gallery(gallery_id))
 
     def list_video_files(self, name: str) -> dict[str, Any]:
-        return self._video_call(name, lambda client: client.list_video_files())
+        return self._checked_device_call(name, lambda client: client.list_video_files())
 
     def get_video_file(self, name: str, file_id: str) -> dict[str, Any]:
         resource_id(file_id)
-        return self._video_call(name, lambda client: client.get_video_file(file_id))
+        return self._checked_device_call(name, lambda client: client.get_video_file(file_id))
 
     def delete_video_file(self, name: str, file_id: str) -> dict[str, Any]:
         resource_id(file_id)
-        return self._video_call(name, lambda client: client.delete_video_file(file_id))
+        return self._checked_device_call(name, lambda client: client.delete_video_file(file_id))
 
     def upload_video_file(self, name: str, gallery_id: str, source: Path,
                           filename: str = "video.mp4", kind: str = "video",
@@ -351,13 +384,13 @@ class ManagerService:
         options = upload_options(filename, kind, title, play, repeat, presentation)
         if not source.is_file() or not source.stat().st_size:
             raise ValueError("prepared media must be a nonempty file")
-        return self._video_call(name, lambda client: client.upload_video_file(
+        return self._checked_device_call(name, lambda client: client.upload_video_file(
             gallery_id, source, **options), timeout=300)
 
     def download_video_file(self, name: str, file_id: str, destination: Path,
                             max_bytes: int | None = None) -> dict[str, Any]:
         resource_id(file_id)
-        return self._video_call(name, lambda client: client.download_video_file(
+        return self._checked_device_call(name, lambda client: client.download_video_file(
             file_id, destination, max_bytes=max_bytes), timeout=300)
 
     def play_video(self, name: str, url: str | None = None, file_id: str | None = None,
@@ -365,11 +398,11 @@ class ManagerService:
                    presentation: str = "auto") -> dict[str, Any]:
         payload = playback_payload(url=url, file_id=file_id, gallery_id=gallery_id,
                                    repeat=repeat, presentation=presentation)
-        return self._video_call(name, lambda client: client.play_video(**payload))
+        return self._checked_device_call(name, lambda client: client.play_video(**payload))
 
     def stop_video(self, name: str, presentation: str = "all") -> dict[str, Any]:
         validate_presentation(presentation, stop=True)
-        return self._video_call(name, lambda client: client.stop_video(presentation))
+        return self._checked_device_call(name, lambda client: client.stop_video(presentation))
 
     def device_time(self, name: str) -> dict[str, Any]:
         return self._on_device_call(name, lambda client: client.time(), timeout=15)
@@ -540,6 +573,9 @@ class ManagerService:
             "reachable": None,
             "last_reachability_check_at": state.get("last_reachability_check_at"),
             "state": state,
+            "current_mode": None,
+            "modes": [],
+            "controls": None,
         }
         if device.get("local_ip"):
             try:
@@ -551,6 +587,10 @@ class ManagerService:
                     "orientation": ident.get("orientation"),
                     "name": ident.get("name"),
                 }
+                controls = ident.get("controls")
+                status["controls"] = controls if isinstance(controls, dict) else None
+                status["current_mode"] = controls.get("active_mode") if isinstance(controls, dict) else None
+                status["modes"] = controls.get("modes", []) if isinstance(controls, dict) else []
                 status["current_gallery"] = self._client(device, 3).current_gallery()
             except Exception as exc:
                 status["reachable"] = False

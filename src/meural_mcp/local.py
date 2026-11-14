@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from .video import copy_video_download, resource_id
-from .modes import mode_definition, mode_id
+from .modes import progress_payload, mode_definition, mode_id
 
 DEVICE_PORT = 8099
 
@@ -175,6 +175,12 @@ class FrameLocalClient:
         if epoch is not None:
             params["epoch"] = epoch
         return self.get("/local/modes/events", params=params)
+
+    def set_menu_progress(self, identifier: str, progress: dict) -> dict:
+        response = requests.post(f"{self.base_url}/local/modes/{mode_id(identifier)}/progress",
+                                 json=progress_payload(progress), timeout=self.timeout, params=self._params())
+        self._check(response)
+        return response.json()
 
     def set_menu_timeout(self, identifier: str, seconds: int | None, menu_id: str | None = None) -> dict:
         data = {"seconds": "inherit" if seconds is None else seconds}

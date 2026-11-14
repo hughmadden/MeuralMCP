@@ -411,10 +411,10 @@ class VideoMcpTests(unittest.TestCase):
         self.service_patch.stop()
         self.remote_patch.stop()
 
-    def test_all_25_existing_tools_plus_13_video_and_7_mode_tools(self):
+    def test_all_25_existing_tools_plus_13_video_and_8_mode_tools(self):
         tools = asyncio.run(mcp_server.build_mcp_server().list_tools())
         names = {tool.name for tool in tools}
-        self.assertEqual(len(names), 45)
+        self.assertEqual(len(names), 46)
         self.assertTrue(VIDEO_TOOLS.issubset(names))
         self.assertTrue({"get_device_status", "set_device_image_data", "get_device_settings", "run_device_action"}.issubset(names))
 
@@ -518,7 +518,7 @@ class VideoMcpTests(unittest.TestCase):
             if text.startswith("event:"):
                 text = next(line[6:] for line in text.splitlines() if line.startswith("data: "))
             tools = json.loads(text)["result"]["tools"]
-            self.assertEqual(len(tools), 45)
+            self.assertEqual(len(tools), 46)
             self.assertTrue(VIDEO_TOOLS.issubset({tool["name"] for tool in tools}))
 
 

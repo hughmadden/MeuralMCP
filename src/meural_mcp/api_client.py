@@ -5,7 +5,7 @@ import requests
 
 from .video import (copy_video_download, playback_payload, resource_id,
                     upload_options, validate_presentation)
-from .modes import mode_id
+from .modes import progress_payload, mode_id
 
 
 def verify_tls_from_value(value: Optional[str]) -> bool:
@@ -188,6 +188,10 @@ class RemoteApiClient:
         if epoch is not None:
             params["epoch"] = epoch
         return self.request("GET", f"/devices/{name}/modes/events", params=params)
+
+    def set_menu_progress(self, name: str, identifier: str, progress: dict) -> dict[str, Any]:
+        return self.request("POST", f"/devices/{name}/modes/{mode_id(identifier)}/progress",
+                            json=progress_payload(progress))
 
     def set_menu_timeout(self, name: str, identifier: str, seconds: int | None,
                          menu_id: str | None = None) -> dict[str, Any]:

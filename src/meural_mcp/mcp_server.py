@@ -255,6 +255,10 @@ def mcp_get_device_mode_events(name: str, after: int = 0, epoch: str | None = No
     return _feature("mode_events", name, after=after, epoch=epoch, **kw)
 
 
+def mcp_set_device_menu_progress(name: str, mode_id: str, progress: dict[str, Any], **kw) -> dict[str, Any]:
+    return _feature("set_menu_progress", name, identifier=mode_id, progress=progress, **kw)
+
+
 def mcp_set_device_menu_timeout(name: str, mode_id: str, seconds: int | None,
                               menu_id: str | None = None, **kw) -> dict[str, Any]:
     return _feature("set_menu_timeout", name, identifier=mode_id, seconds=seconds, menu_id=menu_id, **kw)
@@ -485,6 +489,11 @@ def build_mcp_server(
     def get_device_mode_events(name: str, after: int = 0, epoch: str | None = None) -> dict[str, Any]:
         """Poll activation/deactivation/action events; reconcile active mode and generation on epoch/gap changes."""
         return mcp_get_device_mode_events(name, after, epoch)
+
+    @server.tool()
+    def set_device_menu_progress(name: str, mode_id: str, progress: dict[str, Any]) -> dict[str, Any]:
+        """Show/update/clear loading feedback. Supply current epoch, mode_generation and optional message/percent/timeout_s, or clear=true."""
+        return mcp_set_device_menu_progress(name, mode_id, progress)
 
     @server.tool()
     def set_device_menu_timeout(name: str, mode_id: str, seconds: int | None,

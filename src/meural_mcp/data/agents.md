@@ -384,3 +384,28 @@ exceeds the MCP limit fails with `invalid_request`; use the binary REST route.
 Prepared fullscreen streams accept HTTP(S)/HLS and RTSP(S) media URLs. The native
 decoder must support the actual stream codec/profile; protocol availability is
 not playback proof. Transparent prepared-alpha streams require HTTP(S).
+
+## Loading and progress feedback
+
+DeviceControl 1.3.1 adds immediate loading feedback to confirmed mode switches.
+Built-in activation clears on return; external modes have a 15-second fallback.
+A mode client should report progress and clear it once its first frame is ready.
+Use `set_device_menu_progress(name, mode_id, progress)` or REST
+`POST /devices/{name}/modes/{mode_id}/progress`. The `progress` object requires
+current `epoch` and integer `mode_generation` from status, mode selection or
+events. Optional `message` is 1–160 characters without control codes; `percent`
+is null for animated waiting or a number 0–100; `timeout_s` is 1–3600, default 30.
+Each update renews that lifetime. Complete with only the epoch, generation and
+`clear: true`. For example, `{"epoch":"<current epoch>","mode_generation":3,
+"message":"Loading scene…","percent":65,"timeout_s":30}`; then
+`{"epoch":"<current epoch>","mode_generation":3,"clear":true}`.
+Serialize jobs and suppress stale updates/completion within a mode session.
+
+Status `controls.progress` is null or the current message/percent/timeout/source;
+`menu_kind=progress` means the loading panel is visible. Stale/inactive mode
+sessions return 409. Old frames without this endpoint return 404; do not emulate
+readiness or change modes as a fallback. Feedback replaces the menu/picker, uses
+the active menu compositor, and disappears on navigation, completion or expiry.
+It never cancels the mode's work, selects content or changes display ownership.
+A late clear leaves an ordinary menu open. Selection acceptance still does not
+prove renderer readiness.

@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from .local import FrameLocalClient, FrameLocalError
-from .modes import direction as menu_direction, event_cursor, menu_timeout, mode_definition, mode_id
+from .modes import progress_payload, direction as menu_direction, event_cursor, menu_timeout, mode_definition, mode_id
 from .video import (VideoTransferError, playback_payload, resource_id,
                     upload_options, validate_presentation)
 
@@ -334,6 +334,11 @@ class ManagerService:
     def mode_events(self, name: str, after: int = 0, epoch: str | None = None) -> dict[str, Any]:
         event_cursor(after, epoch)
         return self._checked_device_call(name, lambda client: client.mode_events(after, epoch))
+
+    def set_menu_progress(self, name: str, identifier: str, progress: dict) -> dict[str, Any]:
+        mode_id(identifier)
+        payload = progress_payload(progress)
+        return self._checked_device_call(name, lambda client: client.set_menu_progress(identifier, payload))
 
     def set_menu_timeout(self, name: str, identifier: str, seconds: int | None,
                          menu_id: str | None = None) -> dict[str, Any]:

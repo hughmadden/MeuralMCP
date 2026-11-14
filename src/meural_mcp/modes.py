@@ -1,5 +1,6 @@
 """Input bounds for declarative modes and explicit menu navigation."""
 import json
+import math
 import re
 from typing import Literal
 
@@ -44,3 +45,25 @@ def event_cursor(after: int, epoch: str | None = None) -> None:
         raise ValueError('invalid event cursor')
     if epoch is not None and (not isinstance(epoch, str) or len(epoch) > 128):
         raise ValueError('invalid event epoch')
+
+
+def progress_payload(value: dict) -> dict:
+    """Bound current-session UI controls before transport; ownership stays on frame."""
+    if not isinstance(value, dict) or set(value) - {'epoch', 'mode_generation', 'message', 'percent', 'timeout_s', 'clear'}:
+        raise ValueError('invalid progress fields')
+    epoch, generation = value.get('epoch'), value.get('mode_generation')
+    if not isinstance(epoch, str) or not 1 <= len(epoch) <= 128 or type(generation) is not int or generation < 0:
+        raise ValueError('epoch and integer mode_generation are required')
+    clear = value.get('clear', False)
+    if type(clear) is not bool or (clear and set(value) - {'epoch', 'mode_generation', 'clear'}):
+        raise ValueError('clear must be boolean and cannot include progress values')
+    message = value.get('message', 'Please wait…')
+    if not isinstance(message, str) or not 1 <= len(message) <= 160 or any(ord(c) < 32 or ord(c) == 127 for c in message):
+        raise ValueError('invalid progress message')
+    percent = value.get('percent')
+    if percent is not None and (type(percent) not in (int, float) or not 0 <= percent <= 100 or not math.isfinite(percent)):
+        raise ValueError('invalid progress percent')
+    seconds = value.get('timeout_s', 30)
+    if type(seconds) is not int or not 1 <= seconds <= 3600:
+        raise ValueError('invalid progress timeout')
+    return dict(value)

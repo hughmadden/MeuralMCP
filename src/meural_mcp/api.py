@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from . import __version__
 
 from .manager import ManagerService, auth_token_valid, load_config
-from .modes import MenuDirection
+from .modes import MenuDirection, progress_payload
 from .video import (HostSpool, MediaKind, Presentation, StopPresentation, VideoTransferError,
                     new_spool_path, playback_payload, spool_available_bytes,
                     transfer_failure, upload_options)
@@ -138,6 +138,21 @@ class MenuTimeout(BaseModel):
     model_config = ConfigDict(extra="forbid")
     seconds: StrictInt | None = Field(ge=1, le=3600, description="Idle seconds; null clears the override")
     menu_id: str | None = None
+
+
+class MenuProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    epoch: str = Field(min_length=1, max_length=128)
+    mode_generation: StrictInt = Field(ge=0)
+    message: str = Field(default="Please wait…", min_length=1, max_length=160)
+    percent: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    timeout_s: StrictInt = Field(default=30, ge=1, le=3600)
+    clear: bool = False
+
+    @model_validator(mode="after")
+    def validate_progress(self):
+        progress_payload(self.model_dump(exclude_unset=True))
+        return self
 
 
 class ModeBrief(BaseModel):
@@ -331,6 +346,11 @@ def register_routes(api_app: FastAPI) -> None:
     def select_device_mode(name: str, mode_id: str):
         """Explicitly switch to an enabled mode now and close the picker/menu."""
         return frame_response(service().select_mode, name, mode_id)
+
+    @api_app.post("/devices/{name}/modes/{mode_id}/progress", dependencies=[Depends(authenticated)], tags=["Modes"])
+    def set_device_menu_progress(name: str, mode_id: str, payload: MenuProgress):
+        """Show/update/clear bounded loading feedback for the current epoch/generation. Does not cancel work."""
+        return frame_response(service().set_menu_progress, name, mode_id, payload.model_dump(exclude_unset=True))
 
     @api_app.post("/devices/{name}/modes/{mode_id}/timeout", dependencies=[Depends(authenticated)], tags=["Modes"])
     def set_device_menu_timeout(name: str, mode_id: str, payload: MenuTimeout):

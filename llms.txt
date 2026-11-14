@@ -30,6 +30,7 @@ get_device_settings, get_device_settings_schema, update_device_settings,
 run_device_action,
 get_device_modes, select_device_mode, navigate_device_menu, register_device_mode,
 unregister_device_mode, get_device_mode_events, set_device_menu_timeout,
+set_device_menu_progress,
 get_device_video, get_device_video_storage, list_device_video_galleries,
 create_device_video_gallery, get_device_video_gallery,
 delete_device_video_gallery, list_device_video_files, get_device_video_file,
@@ -98,27 +99,37 @@ upload_device_gallery_item only adds an item; display requires show-gallery/item
 calls, after selecting Gallery when needed. See docs/agents.md for mode tools,
 shapes and event-consumer rules.
 
-## Loading and progress feedback
+## Loading and progress feedback (DeviceControl v1.3.1 / MCP v0.7.2)
 
-DeviceControl 1.3.1 adds immediate loading feedback to confirmed mode switches.
-Built-in activation clears on return; external modes have a 15-second fallback.
-A mode client should report progress and clear it once its first frame is ready.
-Use `set_device_menu_progress(name, mode_id, progress)` or REST
-`POST /devices/{name}/modes/{mode_id}/progress`. The `progress` object requires
-current `epoch` and integer `mode_generation` from status, mode selection or
-events. Optional `message` is 1–160 characters without control codes; `percent`
-is null for animated waiting or a number 0–100; `timeout_s` is 1–3600, default 30.
-Each update renews that lifetime. Complete with only the epoch, generation and
-`clear: true`. For example, `{"epoch":"<current epoch>","mode_generation":3,
-"message":"Loading scene…","percent":65,"timeout_s":30}`; then
-`{"epoch":"<current epoch>","mode_generation":3,"clear":true}`.
-Serialize jobs and suppress stale updates/completion within a mode session.
+Use set_device_menu_progress(name, mode_id, progress), or REST
+POST /devices/{name}/modes/{mode_id}/progress with the progress object as its body.
+No registration flag/restart is needed. The mode client reports loading; the
+service draws feedback and does not infer readiness.
 
-Status `controls.progress` is null or the current message/percent/timeout/source;
-`menu_kind=progress` means the loading panel is visible. Stale/inactive mode
-sessions return 409. Old frames without this endpoint return 404; do not emulate
-readiness or change modes as a fallback. Feedback replaces the menu/picker, uses
-the active menu compositor, and disappears on navigation, completion or expiry.
-It never cancels the mode's work, selects content or changes display ownership.
-A late clear leaves an ordinary menu open. Selection acceptance still does not
-prove renderer readiness.
+On activation or a long action: freeze the current controls.epoch and integer
+controls.mode_generation. Report an optional message, percent=null for animated
+waiting or a measured 0–100 value, and timeout_s (1–3600, default 30). Example
+progress: {"epoch":"<controls.epoch>","mode_generation":3,"message":"Loading…",
+"percent":null,"timeout_s":30}. Message is 1–160 characters without control codes.
+Keep the presenter responsive while loading. For long jobs renew before expiry
+(e.g. every 10 seconds for timeout 30), but only while that job/session is still
+current and feedback remains shown. Present the first usable frame or finish
+the action, then send only {"epoch":"<controls.epoch>","mode_generation":3,
+"clear":true}. Percent 100 does not clear. Automatic external-mode loading has
+a 15-second fallback; it is not a completion signal.
+
+Continue consuming events/status. Stop old updates/completion on ownership or
+session changes, or a 409. Never rebase an old job onto a new session. Track a
+local job identity: two actions in one mode generation can otherwise overwrite
+or clear each other's feedback. If progress is hidden after the initial update,
+stop renewing that job's panel; another update would reopen it and replace the
+user's menu. Dismissal/timeout does not cancel work or prove readiness. On failure
+stop renewal and clear only the current job, then report its error separately.
+
+Status controls.progress is null or message/percent/timeout/source;
+menu_kind=progress means visible feedback. Registration never activates a mode;
+a worker must not repeatedly select itself to report loading. A 404 can mean an
+unknown mode or older frame without progress support; inspect catalog/version.
+Inspect status/http_status in tool results, not just transport success. The
+full /agents.md guide has the activation/update/completion tool calls, REST body
+shape, limits, renewal, dismissal, stale-session and superseded-job handling.

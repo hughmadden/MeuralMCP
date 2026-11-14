@@ -387,25 +387,96 @@ not playback proof. Transparent prepared-alpha streams require HTTP(S).
 
 ## Loading and progress feedback
 
-DeviceControl 1.3.1 adds immediate loading feedback to confirmed mode switches.
-Built-in activation clears on return; external modes have a 15-second fallback.
-A mode client should report progress and clear it once its first frame is ready.
-Use `set_device_menu_progress(name, mode_id, progress)` or REST
-`POST /devices/{name}/modes/{mode_id}/progress`. The `progress` object requires
-current `epoch` and integer `mode_generation` from status, mode selection or
-events. Optional `message` is 1–160 characters without control codes; `percent`
-is null for animated waiting or a number 0–100; `timeout_s` is 1–3600, default 30.
-Each update renews that lifetime. Complete with only the epoch, generation and
-`clear: true`. For example, `{"epoch":"<current epoch>","mode_generation":3,
-"message":"Loading scene…","percent":65,"timeout_s":30}`; then
-`{"epoch":"<current epoch>","mode_generation":3,"clear":true}`.
-Serialize jobs and suppress stale updates/completion within a mode session.
+Available with DeviceControl v1.3.1 and MeuralMCP v0.7.2. No mode registration
+flag or restart is needed to use feedback. The mode client reports loading; the
+menu service draws it. It does not measure your work or infer readiness.
 
-Status `controls.progress` is null or the current message/percent/timeout/source;
-`menu_kind=progress` means the loading panel is visible. Stale/inactive mode
-sessions return 409. Old frames without this endpoint return 404; do not emulate
-readiness or change modes as a fallback. Feedback replaces the menu/picker, uses
-the active menu compositor, and disappears on navigation, completion or expiry.
-It never cancels the mode's work, selects content or changes display ownership.
-A late clear leaves an ordinary menu open. Selection acceptance still does not
-prove renderer readiness.
+### What the client should do
+
+1. Register and consume mode events normally. Reconcile `controls.active_mode`
+   before working. A user/controller can explicitly call `select_device_mode`;
+   a mode worker must not keep selecting itself on startup, reconnect or update.
+2. When its mode becomes active, freeze `controls.epoch` and
+   `controls.mode_generation` for that job. For a long menu action, freeze them
+   at action start. Use the current controls snapshot, not an old queued event.
+   Also track a local job identity to suppress superseded actions.
+3. Call `set_device_menu_progress` to show a message and animated wait bar, or
+   measured percentage. Keep the mode's presentation loop responsive and able
+   to display the menu during preparation, including before the final scene is
+   ready. A loading request alone cannot start a mode's renderer.
+4. For long work, renew before timeout (for example every 10 seconds for a
+   30-second lifetime), while continuing to poll events/status. Renew only while
+   that same job/session is current and its feedback remains visible.
+5. Present the first usable frame, or finish applying the action, then explicitly
+   clear feedback. Download/decode completion and a reported 100 percent do not
+   clear it or prove presentation. Completion never stops playback or changes
+   modes. A late clear leaves an ordinary menu open.
+6. Stop the old job's updates/completion on deactivation, session change, or 409.
+   Reconcile and handle a new activation separately. Never attach a fresh epoch
+   or generation to an old job merely to retry it.
+
+A mode switch shows automatic “Loading…” feedback. Built-in activation clears
+on return; external modes have a 15-second fallback. Clients should replace or
+clear it promptly. Client updates have their own bounded lifetime, default 30
+seconds. Timeout/dismissal hides feedback without cancelling work or claiming
+that loading succeeded.
+
+### MCP calls
+
+Read `get_device_modes(name="canvas-1")` or `get_device_status(name="canvas-1")`
+and take the frozen session from the returned `controls`. If a caller explicitly
+uses `select_device_mode`, its result also contains the new `controls` session.
+The following are tool arguments; replace the example epoch/generation with
+those actual values and use the ID of your registered, active mode.
+
+Start indeterminate feedback with `set_device_menu_progress`:
+
+```json
+{"name":"canvas-1","mode_id":"sample","progress":{"epoch":"<controls.epoch>","mode_generation":3,"message":"Loading scene…","percent":null,"timeout_s":30}}
+```
+
+Update that same job with a measured checkpoint:
+
+```json
+{"name":"canvas-1","mode_id":"sample","progress":{"epoch":"<controls.epoch>","mode_generation":3,"message":"Loading textures…","percent":65,"timeout_s":30}}
+```
+
+After actual presentation/completion, clear using only the frozen session and
+completion flag. Do not carry message/percentage/timeout fields into this call:
+
+```json
+{"name":"canvas-1","mode_id":"sample","progress":{"epoch":"<controls.epoch>","mode_generation":3,"clear":true}}
+```
+
+The equivalent REST route is
+`POST /devices/{name}/modes/{mode_id}/progress`; its JSON body is just the inner
+`progress` object above, not the tool's name/mode/progress wrapper. Both surfaces
+return current `controls`. Inspect the operation's `status` and any `http_status`;
+a successful MCP transport response alone does not prove frame acceptance.
+
+### Inputs, renewal and recovery
+
+- `epoch` and integer `mode_generation` are required on every call, including
+  completion. They must match the currently active mode session.
+- Optional `message`: 1–160 characters without control codes; default “Please
+  wait…”. Optional `percent`: null/omitted for animated waiting, or a finite
+  number 0–100. Use measured progress; choose indeterminate when it is unknown.
+- Optional `timeout_s`: integer 1–3600, default 30. Each update renews the
+  indicator's lifetime, even if values are unchanged. `clear=true` accepts only
+  epoch/generation alongside it. A percentage of 100 still needs explicit clear.
+- Status `controls.progress` is null or message/percent/timeout/source, with
+  `menu_kind=progress` while visible. After the initial update, if a later
+  snapshot has no progress or another menu kind, stop renewal for that job.
+  Another update would reopen feedback and replace the user's menu. There is
+  no persistent dismissal latch; a swipe does not cancel the underlying work.
+- Check your local job identity before every update/clear. A mode generation
+  distinguishes activations, not actions within one activation. Old job A must
+  not clear newer job B's indicator. Serialize jobs or suppress superseded ones.
+- Inactive/stale sessions return 409. A 404 can mean an unknown mode or an older
+  frame without this endpoint; inspect its catalog/API version. Do not emulate
+  readiness, repeatedly register, or switch modes as a fallback. Invalid REST
+  inputs return 422; native frame validation errors may be forwarded as 400.
+- On failure, stop renewal and clear only if it is still your current job/session,
+  then report the error through the mode's own UI/logs. No error/ready/job-ID
+  field is accepted. Hidden feedback also occurs after dismissal/timeout, so it
+  must never be interpreted as successful loading or a readiness acknowledgement.
